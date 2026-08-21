@@ -15,7 +15,8 @@ var (
 )
 
 // Store persists opaque transition state. Implementations must atomically
-// replace a value and serialize operations for the same key.
+// replace each value. Transition owners serialize the full commit workflow for
+// a key.
 type Store interface {
 	Load(context.Context, string) ([]byte, error)
 
