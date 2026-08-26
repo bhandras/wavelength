@@ -1331,6 +1331,12 @@ func (a *TxBroadcasterActor) handleBlockObserved(ctx context.Context,
 						"max fee rate cap; leaving tx at "+
 						"its last in-cap fee",
 						"txid", entry.data.Txid)
+				} else if errors.Is(err, ErrParentAlreadyBroadcast) {
+					a.log.DebugS(ctx, "Fee bump child rejected "+
+						"after parent reached the network; "+
+						"will retry",
+						"txid", entry.data.Txid,
+						slog.Any("err", err))
 				} else {
 					a.log.WarnS(ctx, "Fee bump failed, "+
 						"will retry", err,
@@ -2008,6 +2014,29 @@ func (a *TxBroadcasterActor) handleTerminalNotifyResult(ctx context.Context,
 	delete(a.terminalNotifyInflight, msg.inflightKey)
 
 	if msg.err != nil {
+		if errors.Is(msg.err, actor.ErrActorTerminated) ||
+			errors.Is(msg.err, actor.ErrMailboxClosed) {
+
+			a.log.DebugS(ctx, "Terminal tx subscriber stopped "+
+				"after deferred delivery; dropping subscription",
+				"txid", msg.txid,
+				"subscriber_id", msg.subscriberID,
+				"notification_kind", msg.kind,
+				slog.Any("err", msg.err))
+
+			_, err := a.handleCancel(ctx, &CancelInterestReq{
+				Txid:         msg.txid,
+				SubscriberID: msg.subscriberID,
+			})
+			if err != nil {
+				a.log.WarnS(ctx, "Failed to remove stopped terminal "+
+					"tx subscriber", err, "txid", msg.txid,
+					"subscriber_id", msg.subscriberID)
+			}
+
+			return
+		}
+
 		a.log.WarnS(ctx, "Terminal notification failed after "+
 			"actor-path timeout", msg.err, "txid", msg.txid,
 			"subscriber_id", msg.subscriberID,
@@ -2368,6 +2397,22 @@ func (a *TxBroadcasterActor) notifyOneTerminal(ctx context.Context,
 	case err := <-errChan:
 		cancel()
 		if err != nil {
+			// A stopped subscriber can never accept the terminal
+			// notification. Treat it as complete so terminal cleanup
+			// removes the dead subscription instead of retrying it on
+			// every block forever.
+			if errors.Is(err, actor.ErrActorTerminated) ||
+				errors.Is(err, actor.ErrMailboxClosed) {
+
+				a.log.DebugS(ctx, "Terminal tx subscriber stopped; "+
+					"dropping subscription", "txid", txid,
+					"subscriber_id", subscriberID,
+					"notification_kind", kind,
+					slog.Any("err", err))
+
+				return true
+			}
+
 			a.log.WarnS(ctx, "Failed to deliver terminal tx "+
 				"notification", err, "txid", txid,
 				"subscriber_id", subscriberID,

@@ -2047,6 +2047,55 @@ func TestEnsureConfirmedDefersToExistingParentBroadcast(t *testing.T) {
 	mustHaveNoNotification(t, sub)
 }
 
+// TestFeeBumpExistingParentLogsAtDebug verifies that a later fee bump does
+// not warn when another path already placed the parent in the mempool. The
+// original transaction remains live and the actor keeps its confirmation
+// watch, so this is an expected retry state.
+func TestFeeBumpExistingParentLogsAtDebug(t *testing.T) {
+	var buf bytes.Buffer
+	logger := btclog.NewSLogger(btclog.NewDefaultHandler(&buf))
+	logger.SetLevel(btclog.LevelTrace)
+
+	chain := newFakeChainSourceRef(100)
+	walletRef := &fakeWallet{
+		utxos: []*walletcore.Utxo{
+			makeWalletUTXO(t),
+		},
+	}
+	ref, _ := newTestActor(t, Config{
+		ChainSource:           chain,
+		Wallet:                walletRef,
+		FeeBumpIntervalBlocks: 1,
+		Log:                   fn.Some[btclog.Logger](logger),
+	})
+
+	tx := makeTestTx(true)
+	sub := actor.NewChannelTellOnlyRef[Notification]("sub-a", 4)
+	resp := mustEnsure(t, ref.Ref(), &EnsureConfirmedReq{
+		Tx:         tx,
+		Subscriber: sub,
+	})
+	require.Equal(t, TxStateAwaitingConfirmation, resp.State)
+
+	chain.packageErr = errors.Join(
+		chainbackends.NewPackageTxError(
+			"W1", tx.TxHash(), "txn-already-known",
+		),
+		chainbackends.NewPackageTxError(
+			"W2", chainhash.Hash{0xab},
+			"bad-txns-inputs-missingorspent",
+		),
+	)
+	chain.emitBlock(t, 101)
+
+	require.Equal(
+		t, TxStateAwaitingConfirmation,
+		mustTrackedState(t, ref.Ref(), tx, sub),
+	)
+	require.NotContains(t, buf.String(), "Fee bump failed, will retry")
+	require.Contains(t, buf.String(), "Fee bump child rejected after parent")
+}
+
 // TestEnsureConfirmedEscalatesAfterRepeatedFailures verifies that repeated
 // total broadcast failures escalate to an operator-visible warning once the
 // configured threshold is crossed, while the tx keeps retrying and never
@@ -2170,6 +2219,48 @@ func TestEnsureConfirmedFailsPermanentBroadcastError(t *testing.T) {
 
 	failed := mustAwaitNotification(t, sub)
 	require.IsType(t, &TxFailed{}, failed)
+}
+
+// TestNotifyOneTerminalDropsStoppedSubscriber verifies that terminal actor
+// errors complete delivery cleanup instead of scheduling an impossible retry.
+func TestNotifyOneTerminalDropsStoppedSubscriber(t *testing.T) {
+	actorBehavior := NewTxBroadcasterActor(Config{})
+	subscriber := actor.NewChannelTellOnlyRef[Notification]("stopped", 1)
+	txid := chainhash.Hash{0x01}
+
+	tests := []struct {
+		name     string
+		err      error
+		complete bool
+	}{
+		{
+			name:     "actor terminated",
+			err:      actor.ErrActorTerminated,
+			complete: true,
+		},
+		{
+			name:     "mailbox closed",
+			err:      actor.ErrMailboxClosed,
+			complete: true,
+		},
+		{
+			name:     "retryable delivery failure",
+			err:      actor.ErrMailboxFull,
+			complete: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			complete := actorBehavior.notifyOneTerminal(
+				t.Context(), subscriber, txid, "finalized",
+				func(context.Context) error {
+					return test.err
+				},
+			)
+			require.Equal(t, test.complete, complete)
+		})
+	}
 }
 
 // TestInitialConfirmedAsyncDeliveryRetainsSubscriber regression-tests an

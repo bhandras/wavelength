@@ -52,6 +52,25 @@ type reconnectBlockBackend struct {
 	registrations chan *blockEpochRegistration
 }
 
+// stoppedBlockNotifyRef models an actor that has already terminated.
+type stoppedBlockNotifyRef struct {
+	attempts atomic.Int32
+}
+
+func (s *stoppedBlockNotifyRef) ID() string {
+	return "stopped-block-notify"
+}
+
+func (s *stoppedBlockNotifyRef) Tell(context.Context, BlockEpoch) error {
+	s.attempts.Add(1)
+
+	return actor.ErrActorTerminated
+}
+
+func (s *stoppedBlockNotifyRef) TryTell(context.Context, BlockEpoch) error {
+	return actor.ErrActorTerminated
+}
+
 // newMockBackend creates a new mock backend for testing.
 func newMockBackend() *mockBackend {
 	return &mockBackend{
@@ -1386,6 +1405,40 @@ func TestBlockEpochActorNotifyMode(t *testing.T) {
 	require.True(t, ok, "timeout waiting for notification")
 	require.Equal(t, int32(150), event.Height)
 	require.Equal(t, hash, event.Hash)
+}
+
+// TestBlockEpochActorStopsForTerminatedNotifyActor verifies that a dead
+// subscriber ends its backend subscription. Retrying the same Tell on every
+// block cannot recover and leaks both the registration and warning logs.
+func TestBlockEpochActorStopsForTerminatedNotifyActor(t *testing.T) {
+	t.Parallel()
+
+	backend := newMockBackend()
+	epochActor := NewBlockEpochActor(BlockEpochConfig{Backend: backend})
+	defer epochActor.Stop()
+
+	notifier := &stoppedBlockNotifyRef{}
+	result := epochActor.Receive(t.Context(), &SubscribeBlocksRequest{
+		CallerID: "test-stopped-epoch-notify",
+		NotifyActor: fn.Some(
+			actor.TellOnlyRef[BlockEpoch](notifier),
+		),
+	})
+	require.True(t, result.IsOk())
+
+	backend.epochChan <- &BlockEpoch{Height: 150}
+
+	select {
+	case <-backend.epochCancel:
+	case <-time.After(time.Second):
+		t.Fatal("backend registration was not canceled")
+	}
+
+	require.Equal(t, int32(1), notifier.attempts.Load())
+	backend.epochChan <- &BlockEpoch{Height: 151}
+	require.Never(t, func() bool {
+		return notifier.attempts.Load() > 1
+	}, 50*time.Millisecond, 5*time.Millisecond)
 }
 
 // TestBlockEpochActorReconnectsAfterBackendStreamCloses reproduces the
