@@ -681,6 +681,8 @@ func handleSubmitOutboxError(env *Environment, current *AwaitingSubmitAccepted,
 	if after == 0 {
 		after = defaultRetryDelay
 	}
+	next.RetryAfter = after
+	next.RetryReason = evt.ErrorReason
 
 	return &StateTransition{
 		NextState: &next,
