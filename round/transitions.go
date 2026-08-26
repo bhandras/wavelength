@@ -3119,11 +3119,12 @@ func (s *ForfeitSignaturesCollectingState) forfeitCollectionOutbox(
 			ForfeitTxs: forfeitTxs,
 		},
 		&RegisterConfirmationRequest{
-			CallerID:    callerID,
-			Txid:        &txid,
-			PkScript:    pkScript,
-			TargetConfs: env.OperatorTerms.MinConfirmations,
-			HeightHint:  env.StartHeight,
+			CallerID: callerID,
+			Txid:     &txid,
+			PkScript: pkScript,
+			TargetConfs: env.OperatorTerms.
+				VTXOTargetConfirmations(),
+			HeightHint: env.StartHeight,
 		},
 	}
 
@@ -3587,18 +3588,22 @@ func (s *PartialSigsSentState) processEvent(ctx context.Context,
 			slog.Int("pkscript_len", len(pkScript)),
 			slog.Int(
 				"target_confs",
-				int(env.OperatorTerms.MinConfirmations),
+				int(
+					env.OperatorTerms.
+						VTXOTargetConfirmations(),
+				),
 			),
 		)
 
 		outboxMsgs := []ClientOutMsg{
 			forfeitSigReq,
 			&RegisterConfirmationRequest{
-				CallerID:    callerID,
-				Txid:        &txid,
-				PkScript:    pkScript,
-				TargetConfs: env.OperatorTerms.MinConfirmations,
-				HeightHint:  env.StartHeight,
+				CallerID: callerID,
+				Txid:     &txid,
+				PkScript: pkScript,
+				TargetConfs: env.OperatorTerms.
+					VTXOTargetConfirmations(),
+				HeightHint: env.StartHeight,
 			},
 		}
 
