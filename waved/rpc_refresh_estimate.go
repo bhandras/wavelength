@@ -70,6 +70,10 @@ func (r *RPCServer) refreshDryRunPreview(ctx context.Context,
 		return nil, err
 	}
 
+	if err := r.enforceRefreshMaturity(ctx, descs); err != nil {
+		return nil, err
+	}
+
 	outpointStrs := make([]string, 0, len(descs))
 	for _, desc := range descs {
 		outpointStrs = append(
@@ -92,6 +96,97 @@ func (r *RPCServer) refreshDryRunPreview(ctx context.Context,
 	}
 
 	return resp, nil
+}
+
+// enforceRefreshMaturity avoids submitting a refresh the operator is known to
+// reject while one of its lineage commitments is still inside the advertised
+// economic-input maturity window. Missing legacy ancestry metadata leaves the
+// operator's authoritative admission check in charge rather than inventing a
+// local height.
+func (r *RPCServer) enforceRefreshMaturity(ctx context.Context,
+	descs []*vtxo.Descriptor) error {
+
+	terms := r.server.loadOperatorTerms()
+	if terms == nil || terms.MinConfirmations <= 1 {
+		return nil
+	}
+
+	height, err := r.currentBlockHeight(ctx)
+	if err != nil {
+		r.server.log.WarnS(ctx, "Refresh maturity preflight: chain "+
+			"height unavailable", err)
+
+		return nil
+	}
+
+	var (
+		blocked         *vtxo.Descriptor
+		blockedAt       int64
+		currentHeight   = int64(height)
+		minConfs        = terms.MinConfirmations
+		activationConfs = terms.VTXOTargetConfirmations()
+	)
+	for _, desc := range descs {
+		maturityHeight, known := refreshMaturityHeight(desc, minConfs)
+		if !known || currentHeight >= maturityHeight {
+			continue
+		}
+
+		if blocked == nil || maturityHeight > blockedAt {
+			blocked = desc
+			blockedAt = maturityHeight
+		}
+	}
+
+	if blocked == nil {
+		return nil
+	}
+
+	remaining := blockedAt - currentHeight
+
+	return status.Errorf(codes.FailedPrecondition, "VTXO %s is active "+
+		"after %d confirmation(s), but refresh requires %d; retry at "+
+		"block %d (current %d, %d block(s) remaining)",
+		blocked.Outpoint.String(), activationConfs, minConfs, blockedAt,
+		currentHeight, remaining)
+}
+
+// refreshMaturityHeight returns the first block at which every known lineage
+// commitment reaches the requested confirmation depth. Round-direct VTXOs may
+// use CreatedHeight because it names their sole commitment confirmation;
+// multi-hop VTXOs require the per-fragment heights carried by ancestry.
+func refreshMaturityHeight(desc *vtxo.Descriptor,
+	confirmations uint32) (int64, bool) {
+
+	if desc == nil || desc.Status == vtxo.VTXOStatusExpired ||
+		confirmations <= 1 {
+		return 0, false
+	}
+
+	var newestHeight int32
+	if len(desc.Ancestry) == 0 {
+		if desc.ChainDepth != 0 || desc.CreatedHeight <= 0 {
+			return 0, false
+		}
+
+		newestHeight = desc.CreatedHeight
+	} else {
+		for _, fragment := range desc.Ancestry {
+			height := fragment.CommitmentHeight
+			if height <= 0 && desc.ChainDepth == 0 &&
+				fragment.CommitmentTxID == desc.CommitmentTxID {
+
+				height = desc.CreatedHeight
+			}
+			if height <= 0 {
+				return 0, false
+			}
+
+			newestHeight = max(newestHeight, height)
+		}
+	}
+
+	return int64(newestHeight) + int64(confirmations) - 1, true
 }
 
 // resolveRefreshPreviewTargets maps the request selection onto full VTXO

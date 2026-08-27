@@ -1739,6 +1739,10 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 		return nil, err
 	}
 
+	if err := r.enforceRefreshMaturity(ctx, descs); err != nil {
+		return nil, err
+	}
+
 	// `--all` against a wallet with no live VTXOs is not an error —
 	// return an empty result so callers and scripts don't have to
 	// special-case the "nothing to refresh" path. An explicit

@@ -299,6 +299,87 @@ func TestRefreshDryRunEstimateUnknownOutpoint(t *testing.T) {
 	require.Contains(t, err.Error(), outpointStr(missing))
 }
 
+// TestRefreshMaturityPreflight verifies the daemon does not reserve a refresh
+// round input the operator is known to reject during its economic maturity
+// window. The same request becomes valid at exactly N confirmations.
+func TestRefreshMaturityPreflight(t *testing.T) {
+	t.Parallel()
+
+	const (
+		confirmationHeight = int32(100)
+		maturityHeight     = int32(105)
+	)
+
+	svc := &fakeArkService{responseFn: scaledEstimateFn}
+	r, vtxoStore := newRefreshEstimateServer(
+		t, svc, maturityHeight-1,
+	)
+	r.server.storeOperatorTerms(&types.OperatorTerms{
+		MinConfirmations:  6,
+		VTXOConfirmations: 1,
+	})
+
+	desc := newRefreshEstimateVTXO(t, 0x24, 100_000, 1_000)
+	desc.CreatedHeight = confirmationHeight
+	require.NoError(t, vtxoStore.SaveVTXO(t.Context(), desc))
+
+	req := &waverpc.RefreshVTXOsRequest{
+		Selection: &waverpc.RefreshVTXOsRequest_Outpoints{
+			Outpoints: &waverpc.OutpointSelection{
+				Outpoints: []string{
+					outpointStr(desc),
+				},
+			},
+		},
+		DryRun: true,
+	}
+
+	_, err := r.RefreshVTXOs(t.Context(), req)
+	require.Error(t, err)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, err.Error(), "retry at block 105")
+	require.Contains(t, err.Error(), "1 block(s) remaining")
+	require.Zero(
+		t, svc.estimateFeeCalls,
+		"an embargoed refresh must not reach the operator",
+	)
+
+	backend, ok := r.server.chainBackend.(*heightOnlyChainBackend)
+	require.True(t, ok)
+	backend.height = maturityHeight
+
+	resp, err := r.RefreshVTXOs(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, "preview", resp.Status)
+	require.Equal(t, 1, svc.estimateFeeCalls)
+}
+
+// TestRefreshMaturityHeightUsesWholeLineage verifies a multi-parent VTXO is
+// scheduled from its newest known commitment, while unknown OOR ancestry is
+// left to the operator's authoritative admission check.
+func TestRefreshMaturityHeightUsesWholeLineage(t *testing.T) {
+	t.Parallel()
+
+	desc := newRefreshEstimateVTXO(t, 0x25, 100_000, 1_000)
+	desc.ChainDepth = 2
+	desc.Ancestry = []types.Ancestry{
+		{
+			CommitmentHeight: 80,
+		},
+		{
+			CommitmentHeight: 104,
+		},
+	}
+
+	height, known := refreshMaturityHeight(desc, 6)
+	require.True(t, known)
+	require.Equal(t, int64(109), height)
+
+	desc.Ancestry[1].CommitmentHeight = 0
+	_, known = refreshMaturityHeight(desc, 6)
+	require.False(t, known)
+}
+
 // TestRefreshDryRunEstimateDedupesQuotes verifies VTXOs sharing an
 // (amount, remaining-blocks) pair share one operator round-trip: a
 // wallet-wide dry run over a round's fan-out must not turn into one
