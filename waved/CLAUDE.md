@@ -192,6 +192,11 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   terms (the operator's EstimateFee does not apply it). Estimate
   failures set `estimate_error` and never fail the preview. The real
   refresh path still gates on wallet readiness.
+- `RefreshVTXOs` preflights known lineage commitment heights against the
+  operator's advertised `MinConfirmations` before either previewing or
+  reserving a round input. An immature selection returns `FailedPrecondition`
+  with the first retry height. Unknown legacy ancestry metadata falls through
+  to operator admission, which remains authoritative.
 - `SendVTXO` enforces `maxRecipients = 256`, rejects per-recipient amounts
   outside `(0, MaxSatoshi]`, and uses overflow-safe summation; the wallet
   actor repeats these checks as defense-in-depth.
