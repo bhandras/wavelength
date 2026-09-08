@@ -16,7 +16,6 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/chainsource"
@@ -2536,7 +2535,7 @@ func sumBoardingAmounts(amounts []btcutil.Amount) btcutil.Amount {
 func (a *Ark) buildBoardingTxProof(ctx context.Context,
 	blockHash chainhash.Hash, blockHeight int32, confTx *wire.MsgTx,
 	outpoint wire.OutPoint,
-	addr *BoardingAddress) fn.Option[proof.TxProof] {
+	addr *BoardingAddress) fn.Option[types.TxProof] {
 
 	// Fetch the full block to compute the merkle proof.
 	block, err := a.backend.GetBlock(ctx, blockHash)
@@ -2546,7 +2545,7 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 			btclog.Fmt("block_hash", "%v", blockHash),
 		)
 
-		return fn.None[proof.TxProof]()
+		return fn.None[types.TxProof]()
 	}
 
 	// Find the transaction index within the block.
@@ -2565,11 +2564,11 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 			btclog.Fmt("block_hash", "%v", blockHash),
 		)
 
-		return fn.None[proof.TxProof]()
+		return fn.None[types.TxProof]()
 	}
 
 	// Compute the merkle inclusion proof.
-	merkleProof, err := proof.NewTxMerkleProof(
+	merkleProof, err := types.NewTxMerkleProof(
 		block.Transactions, txIdx,
 	)
 	if err != nil {
@@ -2578,7 +2577,7 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 			btclog.Fmt("txid", "%v", txHash),
 		)
 
-		return fn.None[proof.TxProof]()
+		return fn.None[types.TxProof]()
 	}
 
 	// Extract the internal key and tapscript root hash from the boarding
@@ -2593,7 +2592,7 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 			nil,
 		)
 
-		return fn.None[proof.TxProof]()
+		return fn.None[types.TxProof]()
 	}
 	internalKey := addr.Tapscript.ControlBlock.InternalKey
 	merkleRoot := addr.Tapscript.RootHash
@@ -2603,7 +2602,7 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 		slog.Int("block_height", int(blockHeight)),
 	)
 
-	return fn.Some(proof.TxProof{
+	return fn.Some(types.TxProof{
 		MsgTx:           *confTx,
 		BlockHeader:     block.Header,
 		BlockHeight:     uint32(blockHeight),

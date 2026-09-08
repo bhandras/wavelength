@@ -14,7 +14,6 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/wavelength/build"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -755,7 +754,7 @@ func (b *BoardingWalletStore) dbIntentToDomainIntent(ctx context.Context,
 	// This intentionally diverges from db/round_store.go which fails
 	// hard on the same decoder: round-state load has no rebuild
 	// fallback, so the strict policy is appropriate there.
-	txProofOpt := fn.None[proof.TxProof]()
+	txProofOpt := fn.None[types.TxProof]()
 	if len(dbIntent.TxProof) > 0 {
 		decoded, err := types.DeserializeTxProof(dbIntent.TxProof)
 		switch {
@@ -824,7 +823,7 @@ func domainIntentToInsertParams(intent wallet.BoardingIntent,
 		txProofBytes  []byte
 		txProofSerErr error
 	)
-	intent.ChainInfo.TxProof.WhenSome(func(p proof.TxProof) {
+	intent.ChainInfo.TxProof.WhenSome(func(p types.TxProof) {
 		data, err := types.SerializeTxProof(&p)
 		if err != nil {
 			txProofSerErr = err

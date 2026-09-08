@@ -14,7 +14,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -164,7 +163,7 @@ func txProofBlockHeaderDecoder(r io.Reader, val interface{}, _ *[8]byte,
 }
 
 type txProofMerkleProofRecord struct {
-	Proof proof.TxMerkleProof
+	Proof TxMerkleProof
 }
 
 func (t *txProofMerkleProofRecord) Record() tlv.Record {
@@ -215,8 +214,8 @@ type tlvTxProof struct {
 	MerkleRoot    tlv.RecordT[tlvTxProofMerkleRoot, []byte]
 }
 
-// SerializeTxProof serializes a proof.TxProof to TLV-encoded bytes.
-func SerializeTxProof(p *proof.TxProof) ([]byte, error) {
+// SerializeTxProof serializes a TxProof to TLV-encoded bytes.
+func SerializeTxProof(p *TxProof) ([]byte, error) {
 	if p == nil {
 		return nil, nil
 	}
@@ -276,8 +275,8 @@ func SerializeTxProof(p *proof.TxProof) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// DeserializeTxProof deserializes a proof.TxProof from TLV-encoded bytes.
-func DeserializeTxProof(data []byte) (*proof.TxProof, error) {
+// DeserializeTxProof deserializes a TxProof from TLV-encoded bytes.
+func DeserializeTxProof(data []byte) (*TxProof, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
@@ -313,7 +312,7 @@ func DeserializeTxProof(data []byte) (*proof.TxProof, error) {
 	}
 
 	// Reconstruct the TxProof from decoded TLV fields.
-	p := &proof.TxProof{
+	p := &TxProof{
 		BlockHeader:     t.BlockHeader.Val.Header,
 		BlockHeight:     t.BlockHeight.Val,
 		MerkleProof:     t.MerkleProof.Val.Proof,

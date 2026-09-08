@@ -24,8 +24,6 @@ require (
 	github.com/lightninglabs/loop v0.33.0-beta
 	github.com/lightninglabs/neutrino v0.18.0
 	github.com/lightninglabs/neutrino/cache v1.1.4
-	github.com/lightninglabs/taproot-assets v0.7.1-0.20260729123750-e798aabc7f20
-	github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260729123750-e798aabc7f20
 	github.com/lightninglabs/wavelength/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightningnetwork/lightning-onion v1.4.0
 	github.com/lightningnetwork/lnd v0.21.0-beta.rc2.0.20260630214209-40c64f9db30d
@@ -147,6 +145,8 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
 	github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.4-0.20250610182311-2f1d46ef18b7 // indirect
+	github.com/lightninglabs/taproot-assets v0.7.1-0.20260729123750-e798aabc7f20 // indirect
+	github.com/lightninglabs/taproot-assets/taprpc v1.1.1-0.20260729123750-e798aabc7f20 // indirect
 	github.com/lightningnetwork/lnd/actor v0.0.6 // indirect
 	github.com/lightningnetwork/lnd/cert v1.2.2
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect

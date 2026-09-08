@@ -14,7 +14,6 @@ import (
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
@@ -1264,7 +1263,7 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 	}
 
 	// Deserialize TxProof if present.
-	var txProofOpt fn.Option[proof.TxProof]
+	var txProofOpt fn.Option[types.TxProof]
 	if len(dbRoundIntent.TxProof) > 0 {
 		txProof, err := types.DeserializeTxProof(dbRoundIntent.TxProof)
 		if err != nil {
