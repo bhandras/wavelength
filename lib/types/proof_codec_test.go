@@ -7,7 +7,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +14,7 @@ import (
 // testTxProof builds a small but structurally complete TxProof so the
 // codec tests can round-trip a realistic value and seed the fuzzer with
 // one.
-func testTxProof(t testing.TB) *proof.TxProof {
+func testTxProof(t testing.TB) *TxProof {
 	t.Helper()
 
 	tx := wire.NewMsgTx(2)
@@ -30,13 +29,13 @@ func testTxProof(t testing.TB) *proof.TxProof {
 		PkScript: []byte{0x51, 0x20, 0x03, 0x04},
 	})
 
-	merkleProof, err := proof.NewTxMerkleProof([]*wire.MsgTx{tx}, 0)
+	merkleProof, err := NewTxMerkleProof([]*wire.MsgTx{tx}, 0)
 	require.NoError(t, err)
 
 	priv, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	return &proof.TxProof{
+	return &TxProof{
 		MsgTx: *tx,
 		BlockHeader: wire.BlockHeader{
 			Version:   4,

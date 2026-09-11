@@ -26,7 +26,7 @@ server during round participation. These types are used across `round`, `vtxo`,
   absorbs the server fee residual; serialized into `JoinRoundAuth`.
 - `BoardingRequest` — Describes a boarding input: `Outpoint`,
   `PolicyTemplate` (authoritative join-round policy), `ClientKey` /
-  `OperatorKey`, and `ExitDelay`. `TxProof fn.Option[proof.TxProof]` carries
+  `OperatorKey`, and `ExitDelay`. `TxProof fn.Option[TxProof]` carries
   an optional SPV merkle inclusion proof for server-side verification of
   boarding UTXOs without requiring the server's own chain source.
 - `OperatorTerms` — Server-published round parameters (fee rates, expiry

@@ -3,6 +3,7 @@ package waved
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -136,6 +137,10 @@ func BuildTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 			return nil, fmt.Errorf("look up VTXO %s: %w", op, err)
 		}
 
+		if desc.TaprootAssetRoot != nil {
+			return nil, vtxo.ErrAssetVTXORequiresTransition
+		}
+
 		// The checkpoint output collab path is a 2-of-2 multisig
 		// between the VTXO owner and the operator, matching the
 		// VTXO's own collaborative spend path. This ensures both
@@ -191,6 +196,22 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 
 		var desc *vtxo.Descriptor
 
+		// Caller-supplied fields must not hide an asset marker already
+		// known to this wallet. A lookup failure other than absence
+		// fails closed.
+		if store != nil {
+			stored, lookupErr := store.GetVTXO(ctx, outpoint)
+			if lookupErr != nil &&
+				!errors.Is(lookupErr, vtxo.ErrVTXONotFound) {
+				return nil, fmt.Errorf("look up custom VTXO "+
+					"%s: %w", outpoint, lookupErr)
+			}
+			if stored != nil && stored.TaprootAssetRoot != nil {
+				return nil, vtxo.ErrAssetVTXORequiresTransition
+			}
+			desc = stored
+		}
+
 		// If the caller provided amount and pkscript, build
 		// the descriptor directly (for VTXOs not in the local
 		// store, e.g., received via OOR).
@@ -206,13 +227,9 @@ func BuildCustomTransferInputs(ctx context.Context, store vtxo.VTXOStore,
 				OperatorKey:    operatorKey,
 				RelativeExpiry: exitDelay,
 			}
-		} else {
-			// Fall back to store lookup.
-			desc, err = store.GetVTXO(ctx, outpoint)
-			if err != nil {
-				return nil, fmt.Errorf("look up VTXO %s: %w",
-					outpoint, err)
-			}
+		} else if desc == nil {
+			return nil, fmt.Errorf("look up VTXO %s: %w", outpoint,
+				vtxo.ErrVTXONotFound)
 		}
 
 		var (

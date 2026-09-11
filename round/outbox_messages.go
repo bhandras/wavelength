@@ -10,7 +10,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
@@ -297,7 +296,7 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		}
 
 		// Serialize the TxProof inline if present.
-		req.TxProof.WhenSome(func(tp proof.TxProof) {
+		req.TxProof.WhenSome(func(tp types.TxProof) {
 			data, err := types.SerializeTxProof(&tp)
 			if err == nil {
 				br.TxProof = data

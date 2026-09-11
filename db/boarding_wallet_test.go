@@ -12,9 +12,9 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/wavelength/db/sqlc"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
+	"github.com/lightninglabs/wavelength/lib/types"
 	"github.com/lightninglabs/wavelength/wallet"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -1320,13 +1320,13 @@ func TestIntentTxProofRoundTrip(t *testing.T) {
 		Value:    100000,
 		PkScript: []byte{0x51, 0x20, 0x03, 0x04},
 	})
-	merkleProof, err := proof.NewTxMerkleProof(
+	merkleProof, err := types.NewTxMerkleProof(
 		[]*wire.MsgTx{confTx}, 0,
 	)
 	require.NoError(t, err)
 
 	outpoint := wire.OutPoint{Hash: confTx.TxHash(), Index: 0}
-	originalProof := proof.TxProof{
+	originalProof := types.TxProof{
 		MsgTx: *confTx,
 		BlockHeader: wire.BlockHeader{
 			Version: 4,
@@ -1482,7 +1482,7 @@ func TestIntentTxProofCorruptDecodesAsNone(t *testing.T) {
 
 	// Inject a malformed TLV blob directly into the tx_proof column.
 	// `0xde 0xad 0xbe 0xef` is not a valid TLV record stream for
-	// proof.TxProof, so DeserializeTxProof must error. Switch
+	// types.TxProof, so DeserializeTxProof must error. Switch
 	// placeholder style on the backend dialect: SQLite uses `?` while
 	// Postgres requires `$N`.
 	garbage := []byte{0xde, 0xad, 0xbe, 0xef}

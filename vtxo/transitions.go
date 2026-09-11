@@ -167,6 +167,11 @@ func (s *LiveState) handleCohortRefresh(evt *CohortRefreshEvent,
 func (s *LiveState) autoRefreshTransition(height int32,
 	cohortMember bool) *VTXOStateTransition {
 
+	// A Bitcoin refresh would discard the asset commitment.
+	if s.VTXO.TaprootAssetRoot != nil {
+		return &VTXOStateTransition{NextState: s}
+	}
+
 	outbox := []VTXOOutMsg{
 		&ForfeitRequest{
 			VTXOOutpoint:      s.VTXO.Outpoint,
@@ -195,6 +200,10 @@ func (s *LiveState) autoRefreshTransition(height int32,
 func (s *LiveState) handlePendingForfeit(_ context.Context,
 	_ *VTXOEnvironment) (*VTXOStateTransition, error) {
 
+	if s.VTXO.TaprootAssetRoot != nil {
+		return nil, ErrAssetVTXORequiresTransition
+	}
+
 	return &VTXOStateTransition{
 		NextState: &PendingForfeitState{
 			VTXO:              s.VTXO,
@@ -216,6 +225,10 @@ func (s *LiveState) handlePendingForfeit(_ context.Context,
 // until the spend completes or is released.
 func (s *LiveState) handleSpendReserve(_ context.Context, _ *VTXOEnvironment) (
 	*VTXOStateTransition, error) {
+
+	if s.VTXO.TaprootAssetRoot != nil {
+		return nil, ErrAssetVTXORequiresTransition
+	}
 
 	return &VTXOStateTransition{
 		NextState: &SpendingState{
@@ -393,6 +406,10 @@ func (s *LiveState) handleForfeitRequest(ctx context.Context,
 	evt *ForfeitRequestEvent, env *VTXOEnvironment) (*VTXOStateTransition,
 	error) {
 
+	if s.VTXO.TaprootAssetRoot != nil {
+		return nil, ErrAssetVTXORequiresTransition
+	}
+
 	forfeitSpend, err := resolveForfeitSpendPath(s.VTXO, evt)
 	if err != nil {
 		return nil, fmt.Errorf("resolve forfeit spend path: %w", err)
@@ -474,6 +491,10 @@ func (s *LiveState) handleForfeitRequest(ctx context.Context,
 // the VTXO input of a forfeit transaction.
 func resolveForfeitSpendPath(vtxo *Descriptor,
 	evt *ForfeitRequestEvent) (*arkscript.SpendPath, error) {
+
+	if vtxo.TaprootAssetRoot != nil {
+		return nil, ErrAssetVTXORequiresTransition
+	}
 
 	if evt != nil && evt.ForfeitSpend != nil {
 		err := evt.ForfeitSpend.Validate()
@@ -1704,6 +1725,10 @@ func (s *ExpiredState) ProcessEvent(ctx context.Context, event VTXOEvent,
 			), nil
 		}
 
+		if s.VTXO.TaprootAssetRoot != nil {
+			return &VTXOStateTransition{NextState: s}, nil
+		}
+
 		// The VTXO is still expired, so recover it through the ordinary
 		// refresh path. The server admits the input from its effective
 		// batch expiry and the normal connector-bound forfeit protects
@@ -1728,6 +1753,9 @@ func (s *ExpiredState) ProcessEvent(ctx context.Context, event VTXOEvent,
 		}, nil
 
 	case *PendingForfeitEvent:
+		if s.VTXO.TaprootAssetRoot != nil {
+			return nil, ErrAssetVTXORequiresTransition
+		}
 		// The reclaim path: the wallet has committed this expired
 		// VTXO to a round. From here it follows the ordinary forfeit
 		// choreography, because a reclaim IS an ordinary refresh whose

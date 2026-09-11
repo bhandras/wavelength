@@ -35,7 +35,8 @@ import (
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/lndclient"
-	"github.com/lightninglabs/taproot-assets/taprpc"
+	tapsdk "github.com/lightninglabs/tap-sdk"
+	tapgrpc "github.com/lightninglabs/tap-sdk/grpc"
 	"github.com/lightninglabs/wavelength/chain"
 	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
@@ -368,7 +369,7 @@ func DefaultOptions() Options {
 		LNDImage: "mirror.gcr.io/lightninglabs/lnd:" +
 			"daily-testing-20260701",
 		TapdImage: "mirror.gcr.io/lightninglabs/taproot-assets:" +
-			"v0.7.0-rc1",
+			"v0.8.3",
 		ArtifactsBaseDir:    artifactsBaseDir,
 		HarnessLogStdOut:    *harnessLogStdOut,
 		AlwaysKeepArtifacts: true,
@@ -2936,47 +2937,6 @@ func GetLNDClientConn(ctx context.Context, addr, tlsPath,
 	return conn, nil
 }
 
-// getTapdClientConn creates a gRPC connection to tapd using TLS and macaroon
-// authentication.
-func getTapdClientConn(ctx context.Context, addr, tlsPath,
-	macaroonPath string) (*grpc.ClientConn, error) {
-
-	// Load TLS credentials.
-	creds, err := credentials.NewClientTLSFromFile(tlsPath, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load TLS cert: %w", err)
-	}
-
-	// Load macaroon.
-	macBytes, err := os.ReadFile(macaroonPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read macaroon: %w", err)
-	}
-	mac := &macaroon.Macaroon{}
-	if err := mac.UnmarshalBinary(macBytes); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal macaroon: %w", err)
-	}
-
-	macaroonCred, err := macaroons.NewMacaroonCredential(mac)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create macaroon "+
-			"credential: %w", err)
-	}
-
-	// Create dial options with TLS and macaroon credentials.
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(creds),
-		grpc.WithPerRPCCredentials(macaroonCred),
-	}
-
-	conn, err := grpc.NewClient(addr, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial tapd: %w", err)
-	}
-
-	return conn, nil
-}
-
 // waitForTapdReady waits until tapd's GetInfo RPC responds and reports that
 // tapd is synced to chain.
 func (h *Harness) waitForTapdReady() {
@@ -2999,23 +2959,24 @@ func (h *Harness) waitForTapdReady() {
 		defer cancel()
 
 		addr := net.JoinHostPort("127.0.0.1", h.TapdGRPCPort)
-		conn, err := getTapdClientConn(
-			ctx, addr, h.tapdTLSCert, h.tapdMacaroon,
-		)
+		client, err := tapgrpc.NewClient(&tapgrpc.Config{
+			Host:       addr,
+			Network:    tapsdk.NetworkRegtest,
+			TLS:        tapgrpc.TLSFromPath(h.tapdTLSCert),
+			Macaroon:   tapsdk.MacaroonFromPath(h.tapdMacaroon),
+			RPCTimeout: checkTimeout,
+		})
 		if err != nil {
 			return false
 		}
-		defer conn.Close()
-
-		// Call GetInfo to check if tapd is ready and synced.
-		client := taprpc.NewTaprootAssetsClient(conn)
-		resp, err := client.GetInfo(ctx, &taprpc.GetInfoRequest{})
+		defer client.Close()
+		resp, err := client.GetInfo(ctx)
 		if err != nil {
 			return false
 		}
 
 		// Check if tapd is synced to chain.
-		return resp.SyncToChain
+		return resp.SyncedToChain
 	}, defaultTimeout, time.Second, "tapd not ready or not synced")
 }
 

@@ -1748,6 +1748,7 @@ func (m *Manager) coordinateAutoRefreshCohort(ctx context.Context,
 	addCandidates := func(candidates []*Descriptor, pending bool) {
 		for _, candidate := range candidates {
 			if candidate == nil ||
+				candidate.TaprootAssetRoot != nil ||
 				candidate.Outpoint == req.VTXOOutpoint ||
 				candidate.BatchExpiry != req.BatchExpiry ||
 				m.isReserved(candidate.Outpoint) {
@@ -2365,6 +2366,10 @@ func (m *Manager) exactSpendUnavailableError(ctx context.Context,
 			err)
 	}
 
+	if desc.TaprootAssetRoot != nil {
+		return ErrAssetVTXORequiresTransition
+	}
+
 	switch desc.Status {
 	case VTXOStatusLive, VTXOStatusPendingForfeit,
 		VTXOStatusForfeiting, VTXOStatusSpending:
@@ -2397,7 +2402,7 @@ func (m *Manager) insufficientLiquidityError(ctx context.Context,
 
 	var lockedTotal btcutil.Amount
 	for _, desc := range nonTerminal {
-		if desc == nil {
+		if desc == nil || desc.TaprootAssetRoot != nil {
 			continue
 		}
 
@@ -3411,6 +3416,9 @@ func (m *Manager) customForfeitInputStoredMatch(ctx context.Context,
 		return false, false, fmt.Errorf("load existing custom forfeit "+
 			"input %s: nil descriptor", input.Outpoint)
 	}
+	if desc.TaprootAssetRoot != nil {
+		return false, false, ErrAssetVTXORequiresTransition
+	}
 	synthetic := desc.Status == VTXOStatusPendingForfeit
 	if desc.Amount != input.Amount {
 		return false, synthetic, nil
@@ -3663,7 +3671,7 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 	// carry their semantic template and explicit spend paths
 	// instead of a derived standard tapscript.
 	var tapscript *waddrmgr.Tapscript
-	if len(cv.PolicyTemplate) > 0 {
+	if len(cv.PolicyTemplate) > 0 && cv.TaprootAssetRoot == nil {
 		desc := &Descriptor{PolicyTemplate: cv.PolicyTemplate}
 		ts, err := desc.StandardTapScript()
 		if err == nil {
@@ -3681,11 +3689,23 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 	ancestry := make([]Ancestry, len(cv.Ancestry))
 	copy(ancestry, cv.Ancestry)
 
+	var assetRoot *chainhash.Hash
+	if cv.TaprootAssetRoot != nil {
+		root := *cv.TaprootAssetRoot
+		assetRoot = &root
+	}
+
 	return fn.Ok(&Descriptor{
-		Outpoint:       cv.Outpoint,
-		Amount:         cv.Amount,
-		PolicyTemplate: cv.PolicyTemplate,
-		PkScript:       cv.PkScript,
+		Outpoint:           cv.Outpoint,
+		Amount:             cv.Amount,
+		PolicyTemplate:     cv.PolicyTemplate,
+		PkScript:           cv.PkScript,
+		TaprootAssetRoot:   assetRoot,
+		TaprootAssetRef:    cv.TaprootAssetRef,
+		TaprootAssetAmount: cv.TaprootAssetAmount,
+		TaprootAssetSealedPackage: bytes.Clone(
+			cv.TaprootAssetSealedPackage,
+		),
 		ClientKey:      cv.OwnerKey,
 		OperatorKey:    cv.OperatorKey,
 		TapScript:      tapscript,

@@ -7,7 +7,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -421,7 +420,7 @@ type BoardingRequest struct {
 	// builds it inline (see wallet.processUtxo) and the
 	// maybeRebuildBoardingProof recovery path reconstructs it from the
 	// chain backend for any persisted intent that lacks one.
-	TxProof fn.Option[proof.TxProof]
+	TxProof fn.Option[TxProof]
 }
 
 // BoardingInputSignature represents the client's signature for a boarding
