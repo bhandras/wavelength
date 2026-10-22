@@ -1013,14 +1013,15 @@ func admitTopupPay(t *testing.T, b *opBehavior, store Store) {
 }
 
 // TestPayTopupAdmissionRejectionFails asserts that a top-up the daemon refuses
-// to fund, either for lack of spendable funds or for locked liquidity with no
-// earlier attempt of this operation behind it, terminal-fails the operation
-// instead of leaving it to be redelivered and paid after the caller gave up.
+// to fund, for lack of spendable funds, for locked liquidity, or for
+// sub-minimum change, with no earlier attempt of this operation behind it,
+// terminal-fails the operation instead of leaving it to be redelivered and
+// paid after the caller gave up.
 func TestPayTopupAdmissionRejectionFails(t *testing.T) {
 	t.Parallel()
 
 	for _, code := range []codes.Code{
-		codes.ResourceExhausted, codes.Aborted,
+		codes.ResourceExhausted, codes.Aborted, codes.OutOfRange,
 	} {
 		t.Run(code.String(), func(t *testing.T) {
 			t.Parallel()
