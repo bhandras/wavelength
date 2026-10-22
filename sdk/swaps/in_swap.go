@@ -986,8 +986,9 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 			)
 		}
 
-		// The daemon rejects a send for lack of spendable funds, or
-		// because the liquidity is reserved by another operation,
+		// The daemon rejects a send for lack of spendable funds,
+		// because the liquidity is reserved by another operation, or
+		// because every covering selection leaves sub-minimum change,
 		// before it selects or locks any input and before it records a
 		// keyed dispatch attempt. That rejection can also be this
 		// swap's own earlier attempt: it holds the only spendable
