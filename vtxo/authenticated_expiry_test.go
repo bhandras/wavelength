@@ -210,6 +210,7 @@ func TestAuthenticateBatchExpiryRejectsInvalidEvidence(t *testing.T) {
 			},
 		)
 		require.ErrorIs(t, err, resolverErr)
+		require.ErrorIs(t, err, ErrCommitmentUnconfirmed)
 		require.NotErrorIs(t, err, ErrInvalidBatchExpiryEvidence)
 	})
 
