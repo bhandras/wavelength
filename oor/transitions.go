@@ -660,16 +660,16 @@ func handleOutboxError(env *Environment, current State,
 //
 // Unlike the generic handleOutboxError, a retryable error here is bounded by a
 // configurable cumulative retry window (env.MaxTransientSubmitRetry). The
-// operator's transient submit rejections (INPUT_NOT_SPENDABLE and USER_BALANCE)
-// are re-driven on the actor's fixed retry cadence, but only until the window
-// since the first reject elapses. Once the budget is exhausted the session
-// fails terminally via the same path handleOutboxError uses for non-retryable
-// errors (which releases the reserved pre-point-of-no-return input VTXOs), so a
-// genuinely-stuck input or a never-draining UserBalance recipient gives up
-// instead of retrying forever. A zero budget keeps the legacy unbounded
-// behavior, so a directly-constructed Environment without a configured cap
-// still retries as before. Non-retryable errors keep handleOutboxError's
-// immediate-terminal behavior.
+// operator's transient submit rejections (INPUT_NOT_SPENDABLE, USER_BALANCE,
+// and INTERNAL) are re-driven on the actor's fixed retry cadence, but only
+// until the window since the first reject elapses. Once the budget is exhausted
+// the session fails terminally via the same path handleOutboxError uses for
+// non-retryable errors (which releases the reserved pre-point-of-no-return
+// input VTXOs), so a genuinely-stuck input or a never-draining UserBalance
+// recipient gives up instead of retrying forever. A zero budget keeps the
+// legacy unbounded behavior, so a directly-constructed Environment without a
+// configured cap still retries as before. Non-retryable errors keep
+// handleOutboxError's immediate-terminal behavior.
 //
 // The transition never calls time.Now() directly: the current time comes from
 // env.Now() so the FSM stays deterministic under an injected clock. The
