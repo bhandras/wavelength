@@ -317,11 +317,21 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *SubmitAcceptedEvent:
+		// A malformed accepted response is deterministic. Fail this
+		// attempt so its reserved inputs are released instead of
+		// redelivering the same response indefinitely.
+		reject := func(reason string) (*StateTransition, error) {
+			return handleOutboxError(env, s, &OutboxErrorEvent{
+				OutboxType:  "submit accepted",
+				ErrorReason: reason,
+			})
+		}
+
 		// Point-of-no-return: operator has co-signed checkpoints.
 		//
 		// After a crash, client must re-obtain co-signed bytes.
 		if evt.ArkPSBT == nil || evt.ArkPSBT.UnsignedTx == nil {
-			return nil, fmt.Errorf("ark psbt must be provided")
+			return reject("ark psbt must be provided")
 		}
 
 		if s.ArkPSBT == nil || s.ArkPSBT.UnsignedTx == nil {
@@ -330,17 +340,29 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 
 		stateTxid := s.ArkPSBT.UnsignedTx.TxHash()
 		if evt.SessionID != SessionID(stateTxid) {
-			return nil, fmt.Errorf("submit accepted session id " +
-				"mismatch")
+			return reject("submit accepted session id mismatch")
 		}
 
 		evTxid := evt.ArkPSBT.UnsignedTx.TxHash()
 		if stateTxid != evTxid {
-			return nil, fmt.Errorf("ark txid mismatch")
+			return reject("ark txid mismatch")
 		}
 
 		if len(evt.CoSignedCheckpointPSBTs) == 0 {
-			return nil, fmt.Errorf("co-signed checkpoints required")
+			return reject("co-signed checkpoints required")
+		}
+
+		// Validate the returned Ark PSBT before carrying it into the
+		// finalized package. The txid comparison above does not cover
+		// the input witness data attached by the operator.
+		_, err := oortx.ValidateSubmitPackageSigned(
+			evt.ArkPSBT, evt.CoSignedCheckpointPSBTs,
+		)
+		if err != nil {
+			return reject(
+				fmt.Sprintf("co-signed ark package "+
+					"invalid: %v", err),
+			)
 		}
 
 		checkpoints := evt.CoSignedCheckpointPSBTs
