@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/wavelength/ledger"
 	"github.com/lightninglabs/wavelength/rpc/swapclientrpc"
 	"github.com/lightninglabs/wavelength/rpc/wavewalletrpc"
+	"github.com/lightninglabs/wavelength/sdk/swaps"
 	"github.com/lightninglabs/wavelength/waverpc"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -50,6 +51,11 @@ type history struct {
 	// projector uses the set after a successful derive pass to remove rows
 	// that an older binary already persisted in the canonical store.
 	internalOORActivityIDs map[string]struct{}
+
+	// oorDispatchKeys memoizes dispatch idempotency-key lookups for the
+	// lifetime of this history instance (one derive pass), so a page of
+	// raw OOR sends costs at most one registry query per session.
+	oorDispatchKeys map[string]string
 
 	// batchWaitUnavailable distinguishes a failed optional lookup from an
 	// authoritative empty snapshot for the most recently derived page.
@@ -1176,6 +1182,9 @@ func (h *history) collectLedgerEntries(ctx context.Context, offset,
 	oorProjection := projectOORLedgerActivity(
 		resp.GetTransactions(), correlations,
 	)
+	h.correlateKeyedOORSends(
+		ctx, resp.GetTransactions(), correlations, oorProjection,
+	)
 	out := make(
 		[]*wavewalletrpc.WalletEntry, 0,
 		len(
@@ -1291,6 +1300,14 @@ type swapOORCorrelations struct {
 	payAmountsByFundingSession map[string]map[int64]int
 	claimSessions              map[string]struct{}
 	refundSessions             map[string]struct{}
+
+	// paySwapsByPaymentHash indexes every pay swap by its summary payment
+	// hash (natural-order hex, matching lntypes.Hash.String). The keyed
+	// correlation uses it to prove an orphaned OOR send was a pay swap's
+	// funding leg via the dispatch idempotency key, which the funding
+	// flow always carries even when the swap record never persisted its
+	// funding session id.
+	paySwapsByPaymentHash map[string]struct{}
 }
 
 // swapOORCorrelationsFromSwaps indexes swap session ids by the internal OOR leg
@@ -1304,11 +1321,16 @@ func swapOORCorrelationsFromSwaps(
 		payAmountsByFundingSession: make(map[string]map[int64]int),
 		claimSessions:              make(map[string]struct{}),
 		refundSessions:             make(map[string]struct{}),
+		paySwapsByPaymentHash:      make(map[string]struct{}),
 	}
 
 	for _, swap := range swaps {
 		switch swap.GetDirection() {
 		case swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY:
+			if hash := strings.ToLower(swap.GetPaymentHash()); hash != "" {
+				out.paySwapsByPaymentHash[hash] = struct{}{}
+			}
+
 			session := strings.ToLower(swap.GetFundingSessionId())
 			amount := swap.GetAmountSat()
 			if session != "" && amount > 0 {
@@ -1461,6 +1483,105 @@ func internalSwapOORSend(correlations swapOORCorrelations,
 
 	return sessionInSet(correlations.claimSessions, session) ||
 		sessionInSet(correlations.refundSessions, session)
+}
+
+// parseInSwapFundingHash extracts the payment hash an in-swap funding
+// dispatch idempotency key commits to. lntypes.Hash.String renders
+// natural-order hex, matching the swap summary's PaymentHash, so the
+// parsed value indexes paySwapsByPaymentHash directly.
+func parseInSwapFundingHash(key string) (string, bool) {
+	hash, ok := strings.CutPrefix(
+		key, swaps.InSwapFundingIdempotencyKeyPrefix,
+	)
+	if !ok || len(hash) != 64 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(hash); err != nil {
+		return "", false
+	}
+
+	return strings.ToLower(hash), true
+}
+
+// dispatchKeyForSession resolves and memoizes the idempotency key an OOR
+// session was dispatched with. Errors are not memoized, so a transient
+// lookup failure costs one retry per derive pass.
+func (h *history) dispatchKeyForSession(ctx context.Context,
+	session string) (string, error) {
+
+	if h.oorDispatchKeys == nil {
+		h.oorDispatchKeys = make(map[string]string)
+	}
+	if key, ok := h.oorDispatchKeys[session]; ok {
+		return key, nil
+	}
+
+	key, err := h.deps.OORDispatch.DispatchIdempotencyKey(ctx, session)
+	if err != nil {
+		return "", err
+	}
+
+	h.oorDispatchKeys[session] = key
+
+	return key, nil
+}
+
+// correlateKeyedOORSends hides orphaned OOR send legs that structured swap
+// correlation could not explain, by resolving the idempotency key the send
+// was dispatched with. An in-swap funding send always carries a key naming
+// its pay swap's payment hash, even when the swap record never persisted
+// its funding session id (the funding flow skips that write when the
+// daemon cannot resolve the vHTLC outpoint, e.g. same-Ark receivers), so
+// the key is the correlation of last resort. Rows proven internal this
+// way are marked repairable so the reconcile pass removes their already-
+// persisted phantom activity entries. A nil dep, an unresolvable key, or
+// a key naming an unknown swap leaves the row visible, matching legacy
+// behavior.
+func (h *history) correlateKeyedOORSends(ctx context.Context,
+	rows []*waverpc.TransactionHistoryEntry,
+	correlations swapOORCorrelations,
+	projection oorLedgerActivityProjection) {
+
+	if h == nil || h.deps == nil || h.deps.OORDispatch == nil {
+		return
+	}
+
+	for _, row := range rows {
+		entryID := row.GetEntryId()
+		if _, ok := projection.hidden[entryID]; ok {
+			continue
+		}
+
+		session, ok := oorSendSessionID(row)
+		if !ok {
+			continue
+		}
+
+		key, err := h.dispatchKeyForSession(ctx, session)
+		if err != nil {
+			if h.deps.Log != nil {
+				h.deps.Log.DebugS(ctx, "Unable to resolve OOR "+
+					"dispatch key for activity correlation",
+					slog.String("err", err.Error()),
+					slog.String("session_id", session),
+				)
+			}
+
+			continue
+		}
+
+		hash, ok := parseInSwapFundingHash(key)
+		if !ok {
+			continue
+		}
+
+		if _, ok := correlations.paySwapsByPaymentHash[hash]; !ok {
+			continue
+		}
+
+		projection.hidden[entryID] = struct{}{}
+		projection.repairableInternalSend[entryID] = struct{}{}
+	}
 }
 
 // internalZeroDeltaSession reports whether a balanced same-session OOR
