@@ -101,6 +101,9 @@ type oneshotEntry struct {
 	// itself is the single copy of the reminder and survives every retry,
 	// so a slow requester costs one entry, not one per attempt.
 	attempts int
+
+	// pressure distinguishes a brief queue burst from sustained blockage.
+	pressure mailboxPressure
 }
 
 // recurringEntry tracks a recurring tick scheduled via
@@ -418,6 +421,15 @@ func (a *Actor) handleTimerFired(ctx context.Context,
 	switch {
 	// The reminder landed, so the entry has done its job.
 	case err == nil:
+		if entry.pressure.warned {
+			a.logger(ctx).InfoS(
+				ctx,
+				"Timeout callback delivery recovered",
+				slog.String("timeout_id", string(m.ID)),
+				slog.String("callback", entry.callback.ID()),
+				slog.Int("failed_attempts", entry.attempts),
+			)
+		}
 		delete(a.oneshots, m.ID)
 
 	// The requester is gone for good, so there is nobody left to remind
@@ -452,13 +464,27 @@ func (a *Actor) retryOneshot(ctx context.Context, id ID, entry *oneshotEntry,
 	entry.attempts++
 	delay := retryDelay(entry.attempts)
 
-	a.logger(ctx).WarnS(ctx, "Timeout callback delivery failed, retrying",
-		cause,
+	attrs := []any{
 		slog.String("timeout_id", string(id)),
 		slog.String("callback", entry.callback.ID()),
 		slog.Int("attempt", entry.attempts),
 		slog.Duration("retry_in", delay),
-	)
+	}
+	if entry.pressure.shouldWarn(a.clock.Now(), cause) {
+		a.logger(ctx).WarnS(
+			ctx,
+			"Timeout callback delivery failed, retrying",
+			cause,
+			attrs...,
+		)
+	} else {
+		attrs = append(attrs, slog.String("err", cause.Error()))
+		a.logger(ctx).DebugS(
+			ctx,
+			"Timeout callback delivery failed, retrying",
+			attrs...,
+		)
+	}
 
 	gen := entry.gen
 

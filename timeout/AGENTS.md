@@ -39,6 +39,11 @@ timeouts and recurring ticks, delivering `ExpiredMsg` /
 
 ## Invariants
 
+- One-shot `ErrMailboxFull` retries are debug during a 30-second grace
+  period, then warn once per consecutive full-mailbox episode. Recovery
+  after that warning is info. Other delivery errors and terminal drops
+  retain their warning behavior. Diagnostics never change delivery or
+  backoff; cancellation/replacement also discards the episode state.
 - One-shot and recurring timers share the same ID namespace;
   scheduling either type with an existing ID cancels the prior entry
   regardless of type.
