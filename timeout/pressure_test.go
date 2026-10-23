@@ -111,3 +111,56 @@ func TestTimeoutPressureRecovery(t *testing.T) {
 		})
 	}
 }
+
+// TestTickPressureRecovery proves a sustained failure retains the original tick
+// and successful delivery resets the grace period for the next blocked tick.
+func TestTickPressureRecovery(t *testing.T) {
+	t.Parallel()
+
+	clock := newFakeClock(startEpoch)
+	a := newTestActor(clock)
+	cb := newWedgeableTickRef("manager")
+	result := a.Receive(t.Context(), &ScheduleRecurringTickRequest{
+		ID: "tick", Interval: time.Second, Callback: cb,
+	})
+	require.True(t, result.IsOk())
+
+	// Failures occur at seconds 1, 2, 4, 8, 16 and 32. Only the last
+	// crosses the grace boundary; the next retry is scheduled at second 62.
+	clock.Advance(32 * time.Second)
+	entry := a.recurring["tick"]
+	require.True(t, entry.pressure.warned)
+	require.Equal(t, startEpoch.Add(time.Second), entry.pending.FiredAt)
+
+	cb.release()
+	clock.Advance(retryMaxDelay)
+	msgs, attempts := cb.snapshot()
+	require.Len(t, msgs, 1)
+	require.Equal(t, 7, attempts)
+	require.Equal(t, startEpoch.Add(time.Second), msgs[0].FiredAt)
+	require.Zero(t, entry.pressure)
+	require.Zero(t, entry.attempts)
+	require.Nil(t, entry.pending)
+
+	cb.mu.Lock()
+	cb.wedged = true
+	cb.mu.Unlock()
+	clock.Advance(time.Second)
+	require.False(t, entry.pressure.warned)
+	require.Equal(t, clock.Now(), entry.pressure.since)
+	clock.Advance(31 * time.Second)
+	require.True(t, entry.pressure.warned)
+
+	// Cancelling the blocked episode removes both its timer and its policy
+	// state. Reusing the ID must not inherit the old warning suppression.
+	result = a.Receive(t.Context(), &CancelTimeoutRequest{ID: "tick"})
+	require.True(t, result.IsOk())
+	require.Empty(t, a.recurring)
+	result = a.Receive(t.Context(), &ScheduleRecurringTickRequest{
+		ID: "tick", Interval: time.Second, Callback: cb,
+	})
+	require.True(t, result.IsOk())
+	clock.Advance(time.Second)
+	require.False(t, a.recurring["tick"].pressure.warned)
+	require.Equal(t, clock.Now(), a.recurring["tick"].pressure.since)
+}

@@ -120,6 +120,9 @@ type recurringEntry struct {
 	// to zero as soon as a tick lands.
 	attempts int
 
+	// pressure resets with each successfully delivered tick.
+	pressure mailboxPressure
+
 	// pending holds a tick the callback could not accept yet. Holding the
 	// message rather than rebuilding it means a retried tick still reports
 	// the instant its timer fired, not the instant delivery finally
@@ -531,6 +534,16 @@ func (a *Actor) handleTickFired(ctx context.Context,
 	switch {
 	// The tick landed, so the cadence resumes from a clean slate.
 	case err == nil:
+		if entry.pressure.warned {
+			a.logger(ctx).InfoS(
+				ctx,
+				"Tick callback delivery recovered",
+				slog.String("tick_id", string(m.ID)),
+				slog.String("callback", entry.callback.ID()),
+				slog.Int("failed_attempts", entry.attempts),
+			)
+		}
+		entry.pressure = mailboxPressure{}
 		entry.pending = nil
 		entry.attempts = 0
 
@@ -555,13 +568,27 @@ func (a *Actor) handleTickFired(ctx context.Context,
 		entry.attempts++
 		delay := tickRetryDelay(entry.interval, entry.attempts)
 
-		a.logger(ctx).WarnS(ctx, "Tick callback delivery failed, "+
-			"retrying", err,
+		attrs := []any{
 			slog.String("tick_id", string(m.ID)),
 			slog.String("callback", entry.callback.ID()),
 			slog.Int("attempt", entry.attempts),
 			slog.Duration("retry_in", delay),
-		)
+		}
+		if entry.pressure.shouldWarn(a.clock.Now(), err) {
+			a.logger(ctx).WarnS(
+				ctx,
+				"Tick callback delivery failed, retrying",
+				err,
+				attrs...,
+			)
+		} else {
+			attrs = append(attrs, slog.String("err", err.Error()))
+			a.logger(ctx).DebugS(
+				ctx,
+				"Tick callback delivery failed, retrying",
+				attrs...,
+			)
+		}
 
 		//nolint:contextcheck // timer is owned by timeout actor
 		a.armRecurring(m.ID, entry.gen, delay)
