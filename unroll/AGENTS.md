@@ -138,7 +138,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/unroll.<
   lookup error aborts admission. An explicit duplicate that already
   names the identity bound to the target is answered without the lookup,
   so a recovery-store read failure cannot fail an idempotent repeat.
-  Wired in `waved` to the vHTLC recovery store.
+  Recoverable failures require a fresh lookup because their old binding no
+  longer owns the target. Wired in `waved` to the vHTLC recovery store.
 - `ExitSpendPolicyResolver` — interface for looking up the final spend
   policy by `(ExitPolicyKind, ExitPolicyRef)`. Implemented by
   `vhtlcrecovery/unrollpolicy.ExitSpendPolicyResolver`.

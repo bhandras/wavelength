@@ -619,3 +619,73 @@ func TestRegistryInheritedPolicyReachesStartRequest(t *testing.T) {
 		t.Fatal("timed out waiting for StartUnrollRequest")
 	}
 }
+
+// TestRegistryDeadBindingCannotSkipArmedLookup verifies a fresh admission
+// cannot use a recoverable failure's obsolete identity to bypass an armed
+// obligation that now owns the target.
+func TestRegistryDeadBindingCannotSkipArmedLookup(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		lookup  ArmedExitPolicyLookup
+		wantErr error
+	}{
+		{
+			name: "conflicting recovery",
+			lookup: func(context.Context, wire.OutPoint) (
+				ExitPolicyKind, string, bool, error) {
+
+				return vhtlcClaimTestKind, "recovery-new",
+					true, nil
+			},
+			wantErr: ErrExitPolicyMismatch,
+		},
+		{
+			name: "unreadable recovery",
+			lookup: func(context.Context, wire.OutPoint) (
+				ExitPolicyKind, string, bool, error) {
+
+				return "", "", false, context.DeadlineExceeded
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			proof := buildLinearProof(t)
+			desc := testDescriptor(
+				t, proof.TargetOutpoint(), proof.CSVDelay(),
+			)
+			target := proof.TargetOutpoint()
+			registry, store, _ := newRegistryHarnessWithPolicy(
+				t, proof, desc, test.lookup,
+			)
+			existing := RegistryRecord{
+				TargetOutpoint:     target,
+				ActorID:            "old-attempt",
+				ExitPolicyKind:     vhtlcClaimTestKind,
+				ExitPolicyRef:      vhtlcClaimTestRef,
+				Phase:              PhaseFailed,
+				RecoverableFailure: true,
+			}
+			require.NoError(
+				t,
+				store.UpsertRecord(
+					t.Context(), existing,
+				),
+			)
+
+			_, err := registry.Ref().Ask(
+				t.Context(), &EnsureUnrollRequest{
+					Outpoint:       target,
+					Trigger:        TriggerManual,
+					ExitPolicyKind: vhtlcClaimTestKind,
+					ExitPolicyRef:  vhtlcClaimTestRef,
+				},
+			).Await(t.Context()).Unpack()
+			require.ErrorIs(t, err, test.wantErr)
+
+			record, err := store.GetRecord(t.Context(), target)
+			require.NoError(t, err)
+			require.Equal(t, existing, *record)
+		})
+	}
+}

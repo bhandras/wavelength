@@ -1778,7 +1778,8 @@ func (r *registryBehavior) logPolicyLessDedup(ctx context.Context,
 // An explicit request that already names the identity bound to the target is
 // answered without the lookup: that duplicate leaves the binding unchanged
 // either way, and a bookkeeping failure on the recovery side must not turn an
-// idempotent repeat into an error.
+// idempotent repeat into an error. A recoverable failure has no live binding:
+// its replacement is a fresh admission and must consult the armed obligation.
 func (r *registryBehavior) resolveAdmissionPolicy(ctx context.Context,
 	req *EnsureUnrollRequest, existing *RegistryRecord) (admissionPolicy,
 	error) {
@@ -1789,7 +1790,8 @@ func (r *registryBehavior) resolveAdmissionPolicy(ctx context.Context,
 		Named: exitPolicyKind(req.ExitPolicyKind) !=
 			StandardVTXOTimeoutExitPolicyKind,
 	}
-	if policy.Named && existing != nil && policy.binds(existing) {
+	if policy.Named && existing != nil && !existing.RecoverableFailure &&
+		policy.binds(existing) {
 		return policy, nil
 	}
 
