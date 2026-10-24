@@ -24,9 +24,6 @@ const (
 	refundLocktimeMaxPollInterval = time.Minute
 )
 
-// inSwapFundingIdempotencyKey derives the daemon-side OOR identity for one
-// Ark-to-Lightning vHTLC funding intent. The payment hash is the durable swap
-// identity, so this format must remain stable across process restarts.
 // InSwapFundingIdempotencyKeyPrefix prefixes the idempotency key carried by
 // every in-swap funding OOR dispatch. The wallet history layer parses this
 // prefix to correlate funding legs whose swap record never persisted its
@@ -35,9 +32,11 @@ const (
 // change.
 const InSwapFundingIdempotencyKeyPrefix = "in-swap-funding:"
 
+// inSwapFundingIdempotencyKey derives the daemon-side OOR identity for one
+// Ark-to-Lightning vHTLC funding intent. The payment hash is the durable swap
+// identity, so this format must remain stable across process restarts.
 func inSwapFundingIdempotencyKey(hash lntypes.Hash) string {
-	return fmt.Sprintf("%s%s", InSwapFundingIdempotencyKeyPrefix,
-		hash.String())
+	return InSwapFundingIdempotencyKeyPrefix + hash.String()
 }
 
 // PayState identifies the client-side lifecycle state of an Ark-to-Lightning

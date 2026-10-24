@@ -47,9 +47,8 @@ type history struct {
 	creditTopupLinksSet bool
 
 	// internalOORActivityIDs collects synthetic canonical ids for ledger
-	// rows that structured swap correlation proved are internal. The
-	// projector uses the set after a successful derive pass to remove rows
-	// that an older binary already persisted in the canonical store.
+	// rows proven internal by swap correlation. After a successful derive,
+	// the projector removes copies persisted by an older binary.
 	internalOORActivityIDs map[string]struct{}
 
 	// oorDispatchKeys memoizes dispatch idempotency-key lookups for the
@@ -1327,7 +1326,10 @@ func swapOORCorrelationsFromSwaps(
 	for _, swap := range swaps {
 		switch swap.GetDirection() {
 		case swapclientrpc.SwapDirection_SWAP_DIRECTION_PAY:
-			if hash := strings.ToLower(swap.GetPaymentHash()); hash != "" {
+			if hash := strings.ToLower(
+				swap.GetPaymentHash(),
+			); hash != "" {
+
 				out.paySwapsByPaymentHash[hash] = struct{}{}
 			}
 
@@ -1504,10 +1506,10 @@ func parseInSwapFundingHash(key string) (string, bool) {
 }
 
 // dispatchKeyForSession resolves and memoizes the idempotency key an OOR
-// session was dispatched with. Errors are not memoized, so a transient
-// lookup failure costs one retry per derive pass.
-func (h *history) dispatchKeyForSession(ctx context.Context,
-	session string) (string, error) {
+// session was dispatched with. Errors are not memoized, so later lookups can
+// retry a transient failure.
+func (h *history) dispatchKeyForSession(ctx context.Context, session string) (
+	string, error) {
 
 	if h.oorDispatchKeys == nil {
 		h.oorDispatchKeys = make(map[string]string)
@@ -1526,29 +1528,29 @@ func (h *history) dispatchKeyForSession(ctx context.Context,
 	return key, nil
 }
 
-// correlateKeyedOORSends hides orphaned OOR send legs that structured swap
-// correlation could not explain, by resolving the idempotency key the send
-// was dispatched with. An in-swap funding send always carries a key naming
-// its pay swap's payment hash, even when the swap record never persisted
-// its funding session id (the funding flow skips that write when the
-// daemon cannot resolve the vHTLC outpoint, e.g. same-Ark receivers), so
-// the key is the correlation of last resort. Rows proven internal this
-// way are marked repairable so the reconcile pass removes their already-
-// persisted phantom activity entries. A nil dep, an unresolvable key, or
-// a key naming an unknown swap leaves the row visible, matching legacy
-// behavior.
+// correlateKeyedOORSends uses durable dispatch keys to hide swap funding sends
+// and authorize startup repair, including rows already hidden by structured
+// correlation. The funding key names the pay swap even when its record lacks
+// the funding session id. Missing or unavailable dispatch evidence leaves the
+// structured projection unchanged.
 func (h *history) correlateKeyedOORSends(ctx context.Context,
 	rows []*waverpc.TransactionHistoryEntry,
 	correlations swapOORCorrelations,
 	projection oorLedgerActivityProjection) {
 
-	if h == nil || h.deps == nil || h.deps.OORDispatch == nil {
+	if h == nil || h.deps == nil || h.deps.OORDispatch == nil ||
+		len(correlations.paySwapsByPaymentHash) == 0 {
 		return
 	}
 
 	for _, row := range rows {
 		entryID := row.GetEntryId()
-		if _, ok := projection.hidden[entryID]; ok {
+
+		// Structured funding correlation hides a row without
+		// necessarily authorizing repair. Resolve those rows too so an
+		// older stored projection can be removed once dispatch evidence
+		// proves it internal.
+		if _, ok := projection.repairableInternalSend[entryID]; ok {
 			continue
 		}
 

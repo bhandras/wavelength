@@ -229,8 +229,8 @@ type Deps struct {
 // supply a fake. A session dispatched without a key resolves to the empty
 // string, which is not an error.
 type OORDispatchLookup interface {
-	DispatchIdempotencyKey(ctx context.Context, sessionID string) (
-		string, error)
+	DispatchIdempotencyKey(ctx context.Context,
+		sessionID string) (string, error)
 }
 
 // resolveDeadline returns the effective wallet deadline, applying the
