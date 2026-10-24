@@ -438,6 +438,10 @@ type Server struct {
 	// subsystem is initialized.
 	lazyChainResolver *vtxo.LazyChainResolver
 
+	// serverConn is assigned once during bootstrap, before publishing
+	// serverConnected=true. Concurrent status readers must observe that
+	// publication before reading this field. Shutdown closes the connection
+	// without replacing it.
 	serverConn        *grpc.ClientConn
 	arkClient         arkrpc.ArkServiceClient
 	mailboxClient     mailboxpb.MailboxServiceClient
@@ -935,10 +939,49 @@ func (s *Server) fetchLiveVTXOBalance(ctx context.Context) (btcutil.Amount,
 	return vtxo.SumBalance(descs), nil
 }
 
-// isServerConnected returns the latest mailbox-ingress connectivity signal
-// reported by the daemon runtime.
+// serverConnectionUp composes the two signals behind GetInfo's
+// server_connected: the mailbox-ingress lifecycle signal (ingress started,
+// no incompatibility, not shut down) and, when a direct gRPC connection
+// exists, its live transport state. Without a direct connection (REST
+// transport) there is no transport state to observe, so the ingress signal
+// alone decides, matching monitorOperatorConnection. Extracted as a pure
+// function for tests.
+func serverConnectionUp(ingressUp, hasDirectConn bool,
+	connState connectivity.State) bool {
+
+	if !ingressUp {
+		return false
+	}
+	if !hasDirectConn {
+		return true
+	}
+
+	return connState == connectivity.Ready
+}
+
+// isServerConnected reports whether the daemon's connection to the Ark
+// server is currently up: mailbox ingress is running AND, for a direct
+// gRPC connection, the transport is Ready. A silent network drop is only
+// visible after gRPC detects it; RPC failures alone need not leave Ready.
+// The dialer's operatorKeepaliveParams requests a ping after 30 seconds
+// without activity and closes an unresponsive transport 10 seconds later.
 func (s *Server) isServerConnected() bool {
-	return s.serverConnected.Load()
+	// The ingress flag publishes the connection assigned by asynchronous
+	// wallet bootstrap. Do not read serverConn before observing it: GetInfo
+	// can run while bootstrap is still assigning the connection.
+	if !s.serverConnected.Load() {
+		return false
+	}
+
+	conn := s.serverConn
+	var state connectivity.State
+	if conn != nil {
+		state = conn.GetState()
+	}
+
+	return serverConnectionUp(
+		true, conn != nil, state,
+	)
 }
 
 // setServerConnected updates the mailbox-ingress connectivity signal used by
@@ -5145,7 +5188,10 @@ func (s *Server) refreshAuthenticatedOperatorTerms(ctx context.Context) error {
 	s.operatorTermsUpdateMu.Lock()
 	defer s.operatorTermsUpdateMu.Unlock()
 
-	if !s.isServerConnected() {
+	// Guard on the raw mailbox-ingress lifecycle signal, not the composed
+	// GetInfo connectivity: this refresh must run whenever ingress is up,
+	// including while the transport is briefly reconnecting.
+	if !s.serverConnected.Load() {
 		return fmt.Errorf("mailbox ingress not running")
 	}
 	if s.ark == nil {
