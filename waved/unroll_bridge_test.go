@@ -256,17 +256,10 @@ func (s *scanVTXOStore) ListVTXOsByStatus(context.Context, vtxo.VTXOStatus) (
 	return s.descs, nil
 }
 
-// TestRecoverOrphanedUnrollJobsSkipsPolicyMismatch verifies the boot-time
-// orphan scan does not fail startup when a target is already bound to a
-// different exit policy than the one the scan's admission resolves. That is
-// the state left by a live vHTLC admitted under the standard policy before any
-// recovery existed and armed afterwards: the recovery policy loses the dedup
-// comparison against the durable standard record. The scan must log and skip
-// the target instead of collecting the error, because the bound record keeps
-// driving the exit and a refused boot leaves no RPC server to repair the
-// disagreement. The conflicting recovery row is terminal-failed, matching what
-// the coordinator's post-admission guard does.
-func TestRecoverOrphanedUnrollJobsSkipsPolicyMismatch(t *testing.T) {
+// TestRecoverOrphanedUnrollJobsRejectsDormantPolicyMismatch verifies a
+// conflicting durable record without a live child cannot pass the boot gate
+// or retire the recovery obligation that must retry on the next restart.
+func TestRecoverOrphanedUnrollJobsRejectsDormantPolicyMismatch(t *testing.T) {
 	t.Parallel()
 
 	target := wire.OutPoint{Hash: chainhash.Hash{0xbb}, Index: 7}
@@ -314,8 +307,8 @@ func TestRecoverOrphanedUnrollJobsSkipsPolicyMismatch(t *testing.T) {
 		}, registry, recoveryStore,
 	)
 
-	// The scan result is the boot gate: a mismatch must not fail it.
-	require.NoError(t, err)
+	// The dormant record is still stranded, so the boot gate must fail.
+	require.ErrorIs(t, err, unroll.ErrExitPolicyMismatch)
 
 	// The target was skipped: the bound record is untouched and no second
 	// admission was written for the outpoint.
@@ -328,10 +321,80 @@ func TestRecoverOrphanedUnrollJobsSkipsPolicyMismatch(t *testing.T) {
 	require.Equal(t, "vtxo-unroll-standard", record.ActorID)
 	require.Zero(t, registryStore.upserts)
 
-	// The conflicting recovery was terminal-failed with the mismatch.
-	require.Len(t, recoveryStore.failed, 1)
-	require.ErrorIs(
-		t, recoveryStore.failed["recovery-1"],
-		unroll.ErrExitPolicyMismatch,
-	)
+	// Preserve the obligation so a failed restore does not erase its retry.
+	require.Empty(t, recoveryStore.failed)
+}
+
+// conflictStatusRegistry controls the worker evidence used by conflict cleanup.
+type conflictStatusRegistry struct {
+	status *unroll.GetStatusResp
+	err    error
+}
+
+// GetStatus returns the configured worker status or lookup error.
+func (r conflictStatusRegistry) GetStatus(context.Context, wire.OutPoint) (
+	*unroll.GetStatusResp, error) {
+
+	return r.status, r.err
+}
+
+// TestFailConflictingRecoveryRequiresLiveChild verifies cleanup only retires a
+// conflicting obligation when a live worker is confirmed to own its target.
+func TestFailConflictingRecoveryRequiresLiveChild(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name        string
+		registry    conflictStatusRegistry
+		wantFailure bool
+	}{
+		{
+			name: "active",
+			registry: conflictStatusRegistry{
+				status: &unroll.GetStatusResp{
+					Found: true, Active: true,
+				},
+			},
+			wantFailure: true,
+		},
+		{
+			name: "dormant",
+			registry: conflictStatusRegistry{
+				status: &unroll.GetStatusResp{
+					Found: true,
+				},
+			},
+		},
+		{
+			name: "missing",
+		},
+		{
+			name: "lookup failure",
+			registry: conflictStatusRegistry{
+				err: errors.New("store unavailable"),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &scanRecoveryStore{}
+			mismatch := &unroll.ExitPolicyMismatchError{
+				Target: wire.OutPoint{
+					Index: 7,
+				},
+				RequestedRef: "recovery-1",
+			}
+			err := failConflictingRecovery(
+				t.Context(), store, test.registry, mismatch,
+			)
+			if !test.wantFailure {
+				require.Error(t, err)
+				require.Empty(t, store.failed)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.ErrorIs(t, store.failed["recovery-1"], mismatch)
+		})
+	}
 }

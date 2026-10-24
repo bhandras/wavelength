@@ -258,9 +258,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   its own vHTLC exit policy rather than being mislabeled as a standard
   timeout. A scan admission that inherits nothing dedups against the bound
   record and leaves it in force. A mismatch against the policy already bound
-  to the target is not a boot failure: the scan logs it, terminal-fails the
-  conflicting recovery row, and skips the target, because the bound record
-  still drives that exit.
+  to the target is non-fatal only when a status probe confirms a live child.
+  The scan then terminal-fails the conflicting recovery and skips the target.
+  A dormant or unreadable bound record fails the boot gate and preserves the
+  recovery obligation for retry.
 - The chain-resolver→unroll bridge (`ensureUnrollFromExpiring`) maps a VTXO
   `ExpiringNotification`'s trigger and optional exit policy into the registry's
   `EnsureUnrollRequest`. `unrollStartTrigger` converts the string-typed

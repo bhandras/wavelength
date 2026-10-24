@@ -6192,8 +6192,8 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	// create the record. The ordering above stays as belt-and-suspenders.
 	// Per-target failures are collected and returned after the scan so
 	// startup fails closed instead of serving traffic with a
-	// known-stranded VTXO; a policy mismatch is the exception, because
-	// the bound record still drives that target.
+	// known-stranded VTXO. A policy mismatch is only non-fatal when a
+	// live child is confirmed to be driving the bound record.
 	if err := s.recoverOrphanedUnrollJobs(
 		ctx, vtxoStore, registry, recoveryStore,
 	); err != nil {
@@ -6286,7 +6286,10 @@ func armedRecoveryExitPolicy(ctx context.Context, store coordinator.Store,
 }
 
 // failConflictingRecovery marks the recovery obligation behind a rejected
-// admission as terminally failed. The scan's request names no policy, so the
+// admission as terminally failed, but only after confirming that a live
+// child is driving the bound exit. A dormant record cannot make the scan
+// succeed: the target would remain stranded and the recovery would lose its
+// restart retry. The scan's request names no policy, so the
 // requested identity is the one admission inherited from the armed obligation,
 // and its ref names the row to fail. It mirrors the outcome the recovery
 // coordinator's post-admission guard produces, so a boot-time policy
@@ -6294,7 +6297,16 @@ func armedRecoveryExitPolicy(ctx context.Context, store coordinator.Store,
 // can never be admitted. A rejected request that carries no ref named no
 // recovery obligation, so there is nothing to fail.
 func failConflictingRecovery(ctx context.Context, store coordinator.Store,
+	registry coordinator.UnrollRegistry,
 	mismatch *unroll.ExitPolicyMismatchError) error {
+
+	status, err := registry.GetStatus(ctx, mismatch.Target)
+	if err != nil {
+		return fmt.Errorf("verify conflicting unroll: %w", err)
+	}
+	if status == nil || !status.Found || !status.Active {
+		return fmt.Errorf("bound unroll is not active: %w", mismatch)
+	}
 
 	if mismatch.RequestedRef == "" {
 		return nil
@@ -6318,13 +6330,11 @@ func failConflictingRecovery(ctx context.Context, store coordinator.Store,
 // fails closed instead of serving traffic while known unilateral-exit VTXOs
 // remain stranded.
 //
-// A policy mismatch is the one per-target error that is not fatal. It means
-// the target is already bound to a different exit policy that the registry
-// will keep driving (typically a live vHTLC admitted under the standard
-// policy before its recovery was armed), so refusing to boot would leave the
-// operator with no RPC server to repair it. The scan logs the disagreement,
-// terminal-fails the conflicting recovery row (the same outcome the
-// coordinator's post-admission guard produces), and skips the target.
+// A policy mismatch is non-fatal only when a status probe confirms that a
+// live child is driving the bound record. In that case the scan logs the
+// disagreement, terminal-fails the conflicting recovery row, and skips the
+// target. If no child is active, the scan preserves the recovery obligation
+// and fails startup rather than reporting a stranded target as recovered.
 func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 	vtxoStore vtxo.VTXOStore, registry *unroll.UnrollRegistryActor,
 	recoveryStore coordinator.Store) error {
@@ -6376,17 +6386,14 @@ func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 
 		resp, askErr := ref.Ask(ctx, ensureReq).Await(ctx).Unpack()
 		if askErr != nil {
-			// The target is already bound to a different policy, so
-			// the existing record keeps driving the exit. Retrying
-			// admission cannot help and failing startup here would
-			// leave no RPC server to repair the disagreement.
+			// A conflicting durable record may have failed
+			// restoration. Confirm a live child before treating the
+			// target as driven or retiring the recovery obligation.
 			var mismatch *unroll.ExitPolicyMismatchError
 			if errors.As(askErr, &mismatch) {
 				s.log.WarnS(ctx, "Orphaned unroll job exit "+
 					"policy conflicts with the policy "+
-					"already bound to the target; keeping "+
-					"the bound record and failing the "+
-					"conflicting recovery", askErr,
+					"already bound to the target", askErr,
 					slog.String(
 						"outpoint",
 						mismatch.Target.String(),
@@ -6410,16 +6417,23 @@ func (s *Server) recoverOrphanedUnrollJobs(ctx context.Context,
 				)
 
 				failErr := failConflictingRecovery(
-					ctx, recoveryStore, mismatch,
+					ctx, recoveryStore,
+					coordinator.NewActorUnrollRegistry(ref),
+					mismatch,
 				)
 				if failErr != nil {
-					s.log.WarnS(ctx, "Failed to fail the "+
-						"conflicting vhtlc recovery "+
-						"row; it stays non-terminal "+
-						"until the next attempt",
+					s.log.WarnS(ctx, "Unable to resolve orphaned "+
+						"unroll policy conflict",
 						failErr,
 						slog.String(
 							"outpoint", op.String(),
+						),
+					)
+					recoveryErrs = append(
+						recoveryErrs,
+						fmt.Errorf(
+							"%s: %w", op.String(),
+							failErr,
 						),
 					)
 				}
