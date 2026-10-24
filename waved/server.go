@@ -6155,7 +6155,12 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 	chainResolverRef := actor.NewMapInputRef(
 		registry.Ref(),
 		func(msg vtxo.ExpiringNotification) unroll.RegistryMsg {
-			return ensureUnrollFromExpiring(msg)
+			req := ensureUnrollFromExpiring(msg)
+			if s.cfg.UnrollAdmissionHook != nil {
+				s.cfg.UnrollAdmissionHook(req)
+			}
+
+			return req
 		},
 	)
 
