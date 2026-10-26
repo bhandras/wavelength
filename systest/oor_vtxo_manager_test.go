@@ -117,6 +117,9 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 
 	arkPSBT, finalCheckpoints, recipients, metadata, recipientKey,
 		operatorKey := buildSystemTestIncomingMaterialization(t)
+	// A forged indexer height must not disable expiry monitoring after the
+	// recipient descriptor is committed to the real VTXO store.
+	metadata.CreatedHeight = metadata.BatchExpiry + 1
 	sessionID := oor.SessionID(arkPSBT.UnsignedTx.TxHash())
 	expectedIndex := recipients[0].OutputIndex
 
@@ -195,7 +198,11 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	require.Equal(t, metadata.RoundID, desc.RoundID)
 	require.Equal(t, metadata.CommitmentTxID, desc.CommitmentTxID)
 	require.Equal(t, metadata.BatchExpiry, desc.BatchExpiry)
-	require.Equal(t, metadata.CreatedHeight, desc.CreatedHeight)
+	require.Equal(t, int32(700), desc.CreatedHeight)
+	require.NotEqual(
+		t, vtxo.ExpiryStatusUnknown,
+		vtxo.DefaultExpiryConfig().CheckExpiry(desc, 750),
+	)
 	require.Equal(t, metadata.ChainDepth, desc.ChainDepth)
 
 	state, err := session.FSM.CurrentState()
@@ -440,13 +447,17 @@ func activeVTXOCount(ctx context.Context,
 // authenticateSystemTestExpiry stands in for the chain-authentication
 // boundary in materialization-focused system tests.
 func authenticateSystemTestExpiry(_ context.Context,
-	ancestry []vtxo.Ancestry) (int32, error) {
+	ancestry []vtxo.Ancestry) (vtxo.AuthenticatedBatchEvidence, error) {
 
 	if len(ancestry) == 0 {
-		return 0, fmt.Errorf("expiry ancestry must be provided")
+		return vtxo.AuthenticatedBatchEvidence{},
+			fmt.Errorf("expiry ancestry must be provided")
 	}
 
-	return 1000, nil
+	return vtxo.AuthenticatedBatchEvidence{
+		BatchExpiry:              1000,
+		EarliestCommitmentHeight: 700,
+	}, nil
 }
 
 // seedIncomingRound inserts the round row referenced by the incoming VTXO

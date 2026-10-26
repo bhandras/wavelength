@@ -139,10 +139,13 @@ func newIndexedRecoveryMaterializer(t *testing.T,
 
 		return candidate, nil
 	}
-	m.authenticateExpiry = func(context.Context, []vtxo.Ancestry) (int32,
-		error) {
+	m.authenticateExpiry = func(context.Context, []vtxo.Ancestry) (
+		vtxo.AuthenticatedBatchEvidence, error) {
 
-		return 244, nil
+		return vtxo.AuthenticatedBatchEvidence{
+			BatchExpiry:              244,
+			EarliestCommitmentHeight: 100,
+		}, nil
 	}
 
 	return m
@@ -153,12 +156,15 @@ func newIndexedRecoveryMaterializer(t *testing.T,
 func TestIndexedRecoverySurvivesRestart(t *testing.T) {
 	t.Parallel()
 	job, candidate := indexedRecoveryFixture(t)
+	candidate.CreatedHeight = 245
 	m := newIndexedRecoveryMaterializer(t, candidate)
 	require.NoError(t, m.EnsureRecoveryTarget(t.Context(), job))
 	desc, err := m.vtxos.GetVTXO(t.Context(), job.VTXOOutpoint)
 	require.NoError(t, err)
 	require.Equal(t, vtxo.VTXOStatusUnilateralExit, desc.Status)
 	require.Equal(t, uint32(6), desc.RelativeExpiry)
+	require.Equal(t, int32(100), desc.CreatedHeight)
+	require.Equal(t, int32(244), desc.BatchExpiry)
 	live, err := m.vtxos.ListLiveVTXOs(t.Context())
 	require.NoError(t, err)
 	require.Empty(t, live)
@@ -236,9 +242,11 @@ func TestIndexedRecoveryRejectsUntrustedFunding(t *testing.T) {
 			m *vhtlcRecoveryTargetMaterializer) {
 
 			m.authenticateExpiry = func(context.Context,
-				[]vtxo.Ancestry) (int32, error) {
+				[]vtxo.Ancestry) (
+				vtxo.AuthenticatedBatchEvidence, error) {
 
-				return 0, fmt.Errorf("commitment not confirmed")
+				return vtxo.AuthenticatedBatchEvidence{},
+					fmt.Errorf("commitment not confirmed")
 			}
 		}},
 	}

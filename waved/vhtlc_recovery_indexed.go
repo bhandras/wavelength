@@ -150,10 +150,13 @@ func (m *vhtlcRecoveryTargetMaterializer) buildIndexedRecoveryDescriptor(
 	if err != nil {
 		return nil, err
 	}
-	meta.BatchExpiry, err = m.authenticateExpiry(ctx, meta.Ancestry)
+	evidence, err := m.authenticateExpiry(ctx, meta.Ancestry)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate recovery expiry: %w", err)
 	}
+	meta.BatchExpiry = evidence.BatchExpiry
+	meta.CreatedHeight = evidence.EarliestCommitmentHeight
+
 	operatorKey, err := recoveryPubKey(job.ServerPubkey, "server")
 	if err != nil {
 		return nil, err

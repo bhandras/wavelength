@@ -68,14 +68,16 @@ func TestIndexedExpiryRPCUsesConfirmedDeadline(t *testing.T) {
 			tagSig:  []byte("test-tag-signature"),
 		}),
 		expiryAuthenticator: func(ctx context.Context,
-			ancestry []vtxo.Ancestry) (int32, error) {
+			ancestry []vtxo.Ancestry) (
+			vtxo.AuthenticatedBatchEvidence, error) {
 
 			authenticateCalls.Add(1)
 			if chainUnavailable {
-				return 0, errors.New("chain unavailable")
+				return vtxo.AuthenticatedBatchEvidence{},
+					errors.New("chain unavailable")
 			}
 
-			return vtxo.AuthenticateBatchExpiry(
+			return vtxo.AuthenticateBatchEvidence(
 				ctx, ancestry,
 				func(_ context.Context, txid chainhash.Hash,
 					_ []byte, _ uint32) (

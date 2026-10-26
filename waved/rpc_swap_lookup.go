@@ -351,7 +351,7 @@ func authenticateIndexedExpiry(ctx context.Context, indexed *arkrpc.VTXO,
 		ctx, indexedExpiryAuthenticationTimeout,
 	)
 	defer cancel()
-	expiry, err := authenticate(lookupCtx, ancestry)
+	evidence, err := authenticate(lookupCtx, ancestry)
 	if err != nil {
 		if ctx.Err() != nil {
 			return authenticatedIndexedExpiry{}, ctx.Err()
@@ -364,8 +364,8 @@ func authenticateIndexedExpiry(ctx context.Context, indexed *arkrpc.VTXO,
 		// lag or a chain-backend outage. No deadline is claimed.
 		return verified, nil
 	}
-	if expiry > 0 {
-		verified.batchExpiry = expiry
+	if evidence.BatchExpiry > 0 {
+		verified.batchExpiry = evidence.BatchExpiry
 	}
 
 	return verified, nil

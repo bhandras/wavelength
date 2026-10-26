@@ -29,9 +29,9 @@ type confRef = actor.TellOnlyRef[chainsource.ConfirmationEvent]
 type confirmationRegistration = chainsource.RegisterConfResponse
 
 // NewBatchExpiryAuthenticator adapts the chain-source actor's one-shot
-// confirmation API to the pure VTXO expiry verifier. A fresh caller id keeps
-// concurrent acceptance checks independent; each one-shot watch is removed
-// after its future resolves.
+// confirmation API to the VTXO batch-evidence verifier. A fresh caller id
+// keeps concurrent acceptance checks independent; each one-shot watch is
+// removed after its future resolves.
 func NewBatchExpiryAuthenticator(chainSource actor.ActorRef[
 	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 ]) oor.IncomingExpiryAuthenticator {
@@ -41,21 +41,24 @@ func NewBatchExpiryAuthenticator(chainSource actor.ActorRef[
 	)
 }
 
-// batchExpiryAuthenticatorWithTimeout builds the expiry authenticator with a
-// bounded chain lookup. Durable callers retry a timed-out lookup instead of
-// holding their actor turn and delivery lease indefinitely.
+// batchExpiryAuthenticatorWithTimeout builds the batch-evidence authenticator
+// with a bounded chain lookup. Durable callers retry a timed-out lookup
+// instead of holding their actor turn and delivery lease indefinitely.
 func batchExpiryAuthenticatorWithTimeout(chainSource chainSourceRef,
 	timeout time.Duration) oor.IncomingExpiryAuthenticator {
 
-	return func(ctx context.Context, ancestry []vtxo.Ancestry) (int32,
-		error) {
+	return func(ctx context.Context, ancestry []vtxo.Ancestry) (
+		vtxo.AuthenticatedBatchEvidence, error) {
+
+		var empty vtxo.AuthenticatedBatchEvidence
 
 		if chainSource == nil {
-			return 0, fmt.Errorf("chain source must be provided")
+			return empty, fmt.Errorf("chain source must be " +
+				"provided")
 		}
 		if timeout <= 0 {
-			return 0, fmt.Errorf("expiry authentication timeout " +
-				"must be positive")
+			return empty, fmt.Errorf("expiry authentication " +
+				"timeout must be positive")
 		}
 
 		ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -64,7 +67,7 @@ func batchExpiryAuthenticatorWithTimeout(chainSource chainSourceRef,
 		callerID := "expiry-auth-" + uuid.NewString()
 		noNotify := fn.None[confRef]()
 
-		return vtxo.AuthenticateBatchExpiry(
+		return vtxo.AuthenticateBatchEvidence(
 			ctx, ancestry,
 			func(ctx context.Context, txid chainhash.Hash,
 				pkScript []byte, heightHint uint32) (

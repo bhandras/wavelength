@@ -97,7 +97,7 @@ func TestAuthenticateBatchExpiryUsesEarliestCommitment(t *testing.T) {
 		second.CommitmentTxID: secondConfirmation,
 	}
 	resolveCalls := make(map[chainhash.Hash]int)
-	expiry, err := AuthenticateBatchExpiry(
+	evidence, err := AuthenticateBatchEvidence(
 		t.Context(), []Ancestry{first, duplicate, second},
 		func(_ context.Context, txid chainhash.Hash, _ []byte,
 			_ uint32) (CommitmentConfirmation, error) {
@@ -108,7 +108,9 @@ func TestAuthenticateBatchExpiryUsesEarliestCommitment(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	require.Equal(t, int32(140), expiry)
+	require.Equal(t, int32(140), evidence.BatchExpiry)
+	require.Equal(t, int32(100),
+		evidence.EarliestCommitmentHeight)
 	require.Equal(t, 1, resolveCalls[first.CommitmentTxID])
 	require.Equal(t, 1, resolveCalls[second.CommitmentTxID])
 }

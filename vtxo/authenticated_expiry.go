@@ -34,6 +34,18 @@ type CommitmentConfirmation struct {
 	BlockHeight int32
 }
 
+// AuthenticatedBatchEvidence contains the expiry and earliest commitment
+// confirmation height proven by the same local chain lookups. The height is a
+// conservative watch floor for VTXOs backed by multiple commitments.
+type AuthenticatedBatchEvidence struct {
+	// BatchExpiry is the earliest verified sweep maturity height.
+	BatchExpiry int32
+
+	// EarliestCommitmentHeight is a conservative scan floor across all
+	// confirmed commitments backing the VTXO.
+	EarliestCommitmentHeight int32
+}
+
 // CommitmentConfirmationResolver resolves a commitment transaction's current
 // confirmation snapshot. PkScript and heightHint select and optimize the
 // chain lookup; callers must not treat either as authentication by itself.
@@ -48,11 +60,29 @@ type CommitmentConfirmationResolver func(ctx context.Context,
 func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 	resolve CommitmentConfirmationResolver) (int32, error) {
 
+	evidence, err := AuthenticateBatchEvidence(ctx, ancestry, resolve)
+	if err != nil {
+		return 0, err
+	}
+
+	return evidence.BatchExpiry, nil
+}
+
+// AuthenticateBatchEvidence derives the earliest sweep expiry and a safe
+// confirmation-height floor from the same verified commitment transactions.
+// Indexer height hints select the lookup but never enter the returned values.
+func AuthenticateBatchEvidence(ctx context.Context, ancestry []Ancestry,
+	resolve CommitmentConfirmationResolver) (AuthenticatedBatchEvidence,
+	error) {
+
+	var empty AuthenticatedBatchEvidence
+
 	if len(ancestry) == 0 {
-		return 0, invalidBatchExpiry("ancestry must be provided")
+		return empty, invalidBatchExpiry("ancestry must be provided")
 	}
 	if resolve == nil {
-		return 0, fmt.Errorf("confirmation resolver must be provided")
+		return empty, fmt.Errorf("confirmation resolver must be " +
+			"provided")
 	}
 
 	type commitmentGroup struct {
@@ -65,7 +95,8 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 	for i := range ancestry {
 		fragment := ancestry[i]
 		if err := validateExpiryFragment(fragment); err != nil {
-			return 0, fmt.Errorf("ancestry fragment %d: %w", i, err)
+			return empty, fmt.Errorf("ancestry fragment %d: %w", i,
+				err)
 		}
 
 		group := groups[fragment.CommitmentTxID]
@@ -88,27 +119,28 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 	}
 
 	var earliest int64
+	var earliestHeight int32
 	for txid, group := range groups {
 		confirmation, err := resolve(
 			ctx, txid, group.pkScript, group.heightHint,
 		)
 		if err != nil {
-			return 0, fmt.Errorf("resolve commitment %s: %w: %w",
-				txid, ErrCommitmentUnconfirmed, err)
+			return empty, fmt.Errorf("resolve commitment %s: "+
+				"%w: %w", txid, ErrCommitmentUnconfirmed, err)
 		}
 		if confirmation.Tx == nil {
-			return 0, fmt.Errorf("commitment %s confirmation has "+
-				"no transaction: %w", txid,
+			return empty, fmt.Errorf("commitment %s confirmation "+
+				"has no transaction: %w", txid,
 				ErrCommitmentUnconfirmed)
 		}
 		if confirmation.BlockHeight <= 0 {
-			return 0, fmt.Errorf("commitment %s has invalid "+
+			return empty, fmt.Errorf("commitment %s has invalid "+
 				"confirmation height %d: %w", txid,
 				confirmation.BlockHeight,
 				ErrCommitmentUnconfirmed)
 		}
 		if confirmation.Tx.TxHash() != txid {
-			return 0, invalidBatchExpiry(
+			return empty, invalidBatchExpiry(
 				"confirmation transaction does not match "+
 					"commitment %s", txid,
 			)
@@ -117,7 +149,7 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 		for _, fragment := range group.fragments {
 			idx := fragment.TreePath.BatchOutpoint.Index
 			if idx >= uint32(len(confirmation.Tx.TxOut)) {
-				return 0, invalidBatchExpiry(
+				return empty, invalidBatchExpiry(
 					"commitment %s output %d is out of "+
 						"range", txid, idx,
 				)
@@ -128,7 +160,7 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 			if claimed.Value != actual.Value || !bytes.Equal(
 				claimed.PkScript, actual.PkScript,
 			) {
-				return 0, invalidBatchExpiry(
+				return empty, invalidBatchExpiry(
 					"commitment %s output %d does not "+
 						"match ancestry", txid, idx,
 				)
@@ -137,7 +169,7 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 			expiry := int64(confirmation.BlockHeight) +
 				int64(fragment.CommitmentSweepDelay)
 			if expiry > math.MaxInt32 {
-				return 0, invalidBatchExpiry(
+				return empty, invalidBatchExpiry(
 					"commitment %s expiry overflows int32",
 					txid,
 				)
@@ -146,13 +178,21 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 				earliest = expiry
 			}
 		}
+		if earliestHeight == 0 ||
+			confirmation.BlockHeight < earliestHeight {
+
+			earliestHeight = confirmation.BlockHeight
+		}
 	}
 
 	if earliest == 0 {
-		return 0, invalidBatchExpiry("no expiry was derived")
+		return empty, invalidBatchExpiry("no expiry was derived")
 	}
 
-	return int32(earliest), nil
+	return AuthenticatedBatchEvidence{
+		BatchExpiry:              int32(earliest),
+		EarliestCommitmentHeight: earliestHeight,
+	}, nil
 }
 
 // ValidateIncomingBatchExpiry checks a locally authenticated deadline against

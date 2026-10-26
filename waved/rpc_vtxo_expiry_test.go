@@ -157,9 +157,9 @@ func TestAuthenticatedIndexedExpiryIgnoresIndexerTiming(t *testing.T) {
 	indexed.BatchExpiryHeight = 1_000
 	indexed.RelativeExpiry = 24
 	authenticate := func(ctx context.Context, ancestry []vtxo.Ancestry) (
-		int32, error) {
+		vtxo.AuthenticatedBatchEvidence, error) {
 
-		return vtxo.AuthenticateBatchExpiry(
+		return vtxo.AuthenticateBatchEvidence(
 			ctx, ancestry,
 			func(_ context.Context, txid chainhash.Hash, _ []byte,
 				_ uint32) (vtxo.CommitmentConfirmation, error) {
@@ -219,8 +219,10 @@ func TestAuthenticatedIndexedExpiryIgnoresIndexerTiming(t *testing.T) {
 	chainErr := errors.New("chain unavailable")
 	verified, err = authenticateIndexedExpiry(
 		t.Context(), indexed,
-		func(context.Context, []vtxo.Ancestry) (int32, error) {
-			return 0, chainErr
+		func(context.Context, []vtxo.Ancestry) (
+			vtxo.AuthenticatedBatchEvidence, error) {
+
+			return vtxo.AuthenticatedBatchEvidence{}, chainErr
 		},
 	)
 	require.NoError(t, err)
@@ -229,8 +231,11 @@ func TestAuthenticatedIndexedExpiryIgnoresIndexerTiming(t *testing.T) {
 
 	_, err = authenticateIndexedExpiry(
 		t.Context(), indexed,
-		func(context.Context, []vtxo.Ancestry) (int32, error) {
-			return 0, vtxo.ErrInvalidBatchExpiryEvidence
+		func(context.Context, []vtxo.Ancestry) (
+			vtxo.AuthenticatedBatchEvidence, error) {
+
+			return vtxo.AuthenticatedBatchEvidence{},
+				vtxo.ErrInvalidBatchExpiryEvidence
 		},
 	)
 	require.ErrorIs(t, err, vtxo.ErrInvalidBatchExpiryEvidence)
@@ -245,9 +250,9 @@ func TestAuthenticatedIndexedExpiryCountsOORPackages(t *testing.T) {
 	indexed.BatchExpiryHeight = 1_000
 	indexed.ChainDepth = 0
 	authenticate := func(ctx context.Context, ancestry []vtxo.Ancestry) (
-		int32, error) {
+		vtxo.AuthenticatedBatchEvidence, error) {
 
-		return vtxo.AuthenticateBatchExpiry(
+		return vtxo.AuthenticateBatchEvidence(
 			ctx, ancestry,
 			func(_ context.Context, txid chainhash.Hash, _ []byte,
 				_ uint32) (vtxo.CommitmentConfirmation, error) {
