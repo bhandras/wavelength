@@ -16,22 +16,32 @@ import (
 // reports as codes.Unknown; clients and the REST gateway then cannot tell an
 // authorization failure from an arbitrary server fault.
 //
-// A valid credential that simply lacks the required op is reported as
-// PermissionDenied. Every other failure (no macaroon, undecodable bytes, an
-// unknown root key, a bad signature, or an unsatisfied caveat such as expiry)
-// means the presented credential itself was rejected, so it is reported as
+// A method with no entry in perms is a daemon misconfiguration, not a
+// credential problem, so it is reported as Internal. A valid credential that
+// simply lacks the required op is reported as PermissionDenied. A rejected
+// credential (no macaroon, undecodable bytes, an unknown root key, a bad
+// signature, or an unsatisfied caveat such as expiry) is reported as
 // Unauthenticated. Errors that already carry a status are left unchanged.
 //
-// A root key store failure during verification is also reported as
-// Unauthenticated: lnd surfaces it as the same untyped error as a malformed
-// macaroon ID, so the two cannot be told apart here.
-func macaroonAuthStatus(err error) error {
+// One server-side fault still lands in Unauthenticated: a root key store
+// failure during verification. lnd surfaces it as the same untyped error as a
+// malformed macaroon ID, so the two cannot be told apart here.
+func macaroonAuthStatus(err error, fullMethod string,
+	perms map[string][]bakery.Op) error {
+
 	if err == nil {
 		return nil
 	}
 
 	if _, ok := status.FromError(err); ok {
 		return err
+	}
+
+	// lnd rejects a method it has no permission entry for. waved refuses
+	// to start with an unmapped registered method, so reaching this means
+	// the daemon itself is misconfigured.
+	if _, ok := perms[fullMethod]; !ok {
+		return status.Error(codes.Internal, err.Error())
 	}
 
 	// The bakery reports both "op not granted" and "caveat or signature
@@ -53,9 +63,10 @@ func macaroonAuthStatus(err error) error {
 // macaroonStatusUnaryInterceptor wraps the macaroon unary interceptor so its
 // authorization failures carry a proper gRPC status code. Errors returned by
 // the RPC handler itself pass through untouched: only a failure that occurs
-// before the handler runs is an authorization failure.
-func macaroonStatusUnaryInterceptor(
-	inner grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
+// before the handler runs is an authorization failure. perms must be the
+// permission map the inner interceptor enforces.
+func macaroonStatusUnaryInterceptor(inner grpc.UnaryServerInterceptor,
+	perms map[string][]bakery.Op) grpc.UnaryServerInterceptor {
 
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler) (any, error) {
@@ -72,14 +83,14 @@ func macaroonStatusUnaryInterceptor(
 			return resp, err
 		}
 
-		return resp, macaroonAuthStatus(err)
+		return resp, macaroonAuthStatus(err, info.FullMethod, perms)
 	}
 }
 
 // macaroonStatusStreamInterceptor is the streaming counterpart of
 // macaroonStatusUnaryInterceptor.
-func macaroonStatusStreamInterceptor(
-	inner grpc.StreamServerInterceptor) grpc.StreamServerInterceptor {
+func macaroonStatusStreamInterceptor(inner grpc.StreamServerInterceptor,
+	perms map[string][]bakery.Op) grpc.StreamServerInterceptor {
 
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler) error {
@@ -96,6 +107,6 @@ func macaroonStatusStreamInterceptor(
 			return err
 		}
 
-		return macaroonAuthStatus(err)
+		return macaroonAuthStatus(err, info.FullMethod, perms)
 	}
 }

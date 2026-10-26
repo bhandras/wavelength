@@ -114,7 +114,7 @@ func (s *Server) localRPCServerOptions(ctx context.Context) (
 		// REST gateway map to an auth exit code and to 403 or 401.
 		unaryInterceptors = append(
 			unaryInterceptors, macaroonStatusUnaryInterceptor(
-				macaroonUnaryInterceptor,
+				macaroonUnaryInterceptor, wavedRPCPermissions,
 			),
 		)
 		serverOptions = append(
@@ -122,6 +122,7 @@ func (s *Server) localRPCServerOptions(ctx context.Context) (
 			grpc.ChainStreamInterceptor(
 				macaroonStatusStreamInterceptor(
 					macaroonStreamInterceptor,
+					wavedRPCPermissions,
 				),
 			),
 		)

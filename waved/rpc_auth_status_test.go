@@ -63,8 +63,12 @@ func TestMacaroonAuthFailureStatusCodes(t *testing.T) {
 	)
 	lndUnary, lndStream, err := authService.Interceptors()
 	require.NoError(t, err)
-	unary := macaroonStatusUnaryInterceptor(lndUnary)
-	stream := macaroonStatusStreamInterceptor(lndStream)
+	unary := macaroonStatusUnaryInterceptor(
+		lndUnary, wavedRPCPermissions,
+	)
+	stream := macaroonStatusStreamInterceptor(
+		lndStream, wavedRPCPermissions,
+	)
 
 	readOnly := newReadOnlyTestMacaroon(t, authService)
 
@@ -121,6 +125,14 @@ func TestMacaroonAuthFailureStatusCodes(t *testing.T) {
 			md:       macaroonMetadata(t, wrongKey),
 			method:   balance,
 			wantCode: codes.Unauthenticated,
+		},
+		{
+			// A method missing from the permission map is a
+			// daemon fault, not a credential problem.
+			name:     "unmapped method",
+			md:       macaroonMetadata(t, readOnly),
+			method:   "/waverpc.DaemonService/NotARealMethod",
+			wantCode: codes.Internal,
 		},
 		{
 			name:     "malformed macaroon id",
@@ -209,7 +221,7 @@ func TestMacaroonStatusInterceptorPassesHandlerErrors(t *testing.T) {
 
 	handlerErr := errors.New("handler failed")
 
-	_, err := macaroonStatusUnaryInterceptor(allow)(
+	_, err := macaroonStatusUnaryInterceptor(allow, nil)(
 		t.Context(), nil, &grpc.UnaryServerInfo{},
 		func(context.Context, any) (any, error) {
 			return nil, handlerErr
@@ -217,7 +229,7 @@ func TestMacaroonStatusInterceptorPassesHandlerErrors(t *testing.T) {
 	)
 	require.ErrorIs(t, err, handlerErr)
 
-	err = macaroonStatusStreamInterceptor(allowStream)(
+	err = macaroonStatusStreamInterceptor(allowStream, nil)(
 		nil, &testServerStream{ctx: t.Context()},
 		&grpc.StreamServerInfo{},
 		func(any, grpc.ServerStream) error {
@@ -233,8 +245,10 @@ func TestMacaroonAuthStatusKeepsExistingStatus(t *testing.T) {
 	t.Parallel()
 
 	err := status.Error(codes.Unavailable, "not ready")
-	requireStatusCode(t, macaroonAuthStatus(err), codes.Unavailable)
-	require.NoError(t, macaroonAuthStatus(nil))
+	requireStatusCode(
+		t, macaroonAuthStatus(err, "", nil), codes.Unavailable,
+	)
+	require.NoError(t, macaroonAuthStatus(nil, "", nil))
 }
 
 // requireStatusCode asserts err carries the given gRPC status code.

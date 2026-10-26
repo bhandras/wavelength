@@ -42,13 +42,13 @@ func TestGatewayForwardsMacaroonToGRPC(t *testing.T) {
 	}
 	tempDir := t.TempDir()
 	macaroonPath := filepath.Join(tempDir, "admin.macaroon")
-	authService := newTestMacaroonService(
-		t, macaroonPath, "waved",
-		map[string][]bakery.Op{
-			waverpc.DaemonService_GetInfo_FullMethodName: {
-				readOp,
-			},
+	permissions := map[string][]bakery.Op{
+		waverpc.DaemonService_GetInfo_FullMethodName: {
+			readOp,
 		},
+	}
+	authService := newTestMacaroonService(
+		t, macaroonPath, "waved", permissions,
 	)
 	macaroonUnaryInterceptor, _, err := authService.Interceptors()
 	require.NoError(t, err)
@@ -56,7 +56,7 @@ func TestGatewayForwardsMacaroonToGRPC(t *testing.T) {
 	grpcServer := grpc.NewServer(
 		grpc.UnaryInterceptor(
 			macaroonStatusUnaryInterceptor(
-				macaroonUnaryInterceptor,
+				macaroonUnaryInterceptor, permissions,
 			),
 		),
 	)
