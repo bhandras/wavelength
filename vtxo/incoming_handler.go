@@ -470,14 +470,6 @@ func (h *IncomingVTXOHandler) prepare(ctx context.Context,
 	desc.Ancestry = extras.Ancestry
 	desc.CreatedHeight = extras.CreatedHeight
 	desc.BatchExpiry = extras.BatchExpiry
-	if !HasUsableBatchExpiry(desc) {
-		return fn.Err[*Descriptor](
-			invalidBatchExpiry(
-				"incoming VTXO has inconsistent " +
-					"authenticated heights",
-			),
-		)
-	}
 
 	return fn.Ok(desc)
 }
@@ -513,6 +505,7 @@ func (h *IncomingVTXOHandler) persist(ctx context.Context, desc *Descriptor) (
 // sameIncomingVTXO proves persistence found the row for this event. The
 // immutable script, round, chain anchor, and
 // authenticated expiry must all match before the duplicate is accepted.
+// Creation height is derived metadata and can differ across an upgrade.
 func sameIncomingVTXO(existing, incoming *Descriptor) bool {
 	if existing == nil || incoming == nil {
 		return false
@@ -526,7 +519,6 @@ func sameIncomingVTXO(existing, incoming *Descriptor) bool {
 		existing.CommitmentTxID == incoming.CommitmentTxID &&
 		existing.BatchExpiry == incoming.BatchExpiry &&
 		existing.RelativeExpiry == incoming.RelativeExpiry &&
-		existing.CreatedHeight == incoming.CreatedHeight &&
 		len(existing.Ancestry) > 0
 }
 

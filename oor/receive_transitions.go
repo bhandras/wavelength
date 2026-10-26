@@ -462,21 +462,7 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *IncomingMetadataResolvedEvent:
-		needsAuthentication := !evt.ExpiryAuthenticated
-		for i := range evt.Matches {
-			metadata := evt.Matches[i].Metadata
-			if metadata.CreatedHeight <= 0 ||
-				metadata.CreatedHeight > metadata.BatchExpiry {
-
-				// A durable event authenticated by an older
-				// binary can still carry the indexer's
-				// unverified height. Recheck it before this
-				// version materializes the descriptor.
-				needsAuthentication = true
-				break
-			}
-		}
-		if needsAuthentication {
+		if !evt.ExpiryAuthenticated {
 			authenticate := &AuthenticateIncomingMetadataRequest{
 				Matches: evt.Matches,
 			}

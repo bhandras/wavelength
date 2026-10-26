@@ -4706,13 +4706,20 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	).Ref(s.actorSystem)
 
 	managerConfig := &vtxo.ManagerConfig{
-		Store:                    vtxoStore,
-		ReservationStore:         reservationStore,
-		Wallet:                   vtxoWallet,
-		ChainSource:              chainSourceRef,
-		ActorSystem:              s.actorSystem,
-		ChainParams:              s.chainParams,
-		ExpiryConfig:             s.vtxoExpiryConfig(),
+		Store:            vtxoStore,
+		ReservationStore: reservationStore,
+		Wallet:           vtxoWallet,
+		ChainSource:      chainSourceRef,
+		ActorSystem:      s.actorSystem,
+		ChainParams:      s.chainParams,
+		ExpiryConfig:     s.vtxoExpiryConfig(),
+		RepairCreatedHeight: func(ctx context.Context,
+			desc *vtxo.Descriptor) (int32, error) {
+
+			return vtxo.RepairCreatedHeight(
+				ctx, desc, s.expiryAuthenticator, vtxoStore,
+			)
+		},
 		Log:                      fn.Some(s.subLogger(vtxo.Subsystem)),
 		RoundActor:               roundActor,
 		TimeoutActor:             timeoutRef,

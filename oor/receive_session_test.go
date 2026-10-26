@@ -14,34 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReceiveNotifiedReauthenticatesLegacyHeight keeps a persisted OOR
-// metadata event from materializing a VTXO whose old indexer height would
-// suppress expiry monitoring after an upgrade.
-func TestReceiveNotifiedReauthenticatesLegacyHeight(t *testing.T) {
-	t.Parallel()
-
-	state := &ReceiveNotified{}
-	transition, err := state.ProcessEvent(
-		t.Context(), &IncomingMetadataResolvedEvent{
-			ExpiryAuthenticated: true,
-			Matches: []IncomingMetadataMatch{{
-				Metadata: IncomingVTXOMetadata{
-					BatchExpiry:         1000,
-					CreatedHeight:       1001,
-					ExpiryAuthenticated: true,
-				},
-			}},
-		}, nil,
-	)
-	require.NoError(t, err)
-	require.Same(t, state, transition.NextState)
-	emitted := transition.NewEvents.UnwrapOr(EmittedEvent{})
-	require.Len(t, emitted.Outbox, 1)
-	require.IsType(
-		t, &AuthenticateIncomingMetadataRequest{}, emitted.Outbox[0],
-	)
-}
-
 // TestReceiveSessionNotifiesThenQueriesMetadata verifies the incoming-transfer
 // FSM emits notification and metadata-query outbox work first, deferring ack
 // until local materialization is confirmed.

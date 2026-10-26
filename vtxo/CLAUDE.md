@@ -185,10 +185,13 @@ when the local wallet owns the receive script.
   the sweep leaf, recomputes the tree-root output script, byte-matches that
   output in a locally confirmed commitment transaction, and derives the
   earliest `confirmation height + sweep delay` across ancestry fragments.
-  Creation heights above that authenticated deadline are rejected before
-  persistence; zero remains permitted for recovery. Legacy persisted rows
-  retain the expiry/creation consistency guard because they carry no durable
-  authentication marker. This path does not repair those rows.
+  `AuthenticateBatchEvidence` derives creation height from the earliest
+  confirmation in the same lookups, replacing the indexer hint before
+  persistence. Legacy persisted rows retain the expiry/creation consistency
+  guard because they carry no durable authentication marker. Each child actor
+  retries a bounded creation-height repair on block epochs when creation
+  exceeds expiry, and updates only creation height if confirmed ancestry
+  independently reproduces the saved expiry.
   Lookup or save failures leave the durable event pending for retry. Existing
   persisted rows are not rewritten by this path.
 

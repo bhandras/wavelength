@@ -2,7 +2,9 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -27,6 +29,66 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
+
+// TestRepairCreatedHeightPreservesDescriptor proves verified repair changes
+// only creation height, retries idempotently, and never guesses a saved expiry.
+func TestRepairCreatedHeightPreservesDescriptor(t *testing.T) {
+	t.Parallel()
+
+	store, _, _ := newVTXOStoreForTest(t)
+	desc := createTestVTXODescriptor(t, testRoundIDDB("height-repair"), 49)
+	desc.CreatedHeight = 1001
+	desc.BatchExpiry = 1000
+	desc.Status = vtxo.VTXOStatusSpent
+	require.NoError(t, store.SaveVTXO(t.Context(), desc))
+	before, err := store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, err)
+
+	evidence := vtxo.AuthenticatedBatchEvidence{
+		BatchExpiry:              1000,
+		EarliestCommitmentHeight: 700,
+	}
+	lookupErr := errors.New("confirmation unavailable")
+	authenticate := func(context.Context, []vtxo.Ancestry) (
+		vtxo.AuthenticatedBatchEvidence, error) {
+
+		return evidence, lookupErr
+	}
+	_, err = vtxo.RepairCreatedHeight(
+		t.Context(), desc, authenticate, store,
+	)
+	require.ErrorIs(t, err, lookupErr)
+	lookupErr = nil
+	evidence.BatchExpiry = 999
+	_, err = vtxo.RepairCreatedHeight(
+		t.Context(), desc, authenticate, store,
+	)
+	require.ErrorContains(t, err, "differs from saved expiry")
+	after, err := store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+
+	evidence.BatchExpiry = 1000
+	stale := *desc
+	stale.CreatedHeight = 1002
+	require.Error(
+		t,
+		store.RepairVTXOCreatedHeight(
+			t.Context(), &stale, evidence,
+		),
+	)
+	for range 2 {
+		height, err := vtxo.RepairCreatedHeight(
+			t.Context(), desc, authenticate, store,
+		)
+		require.NoError(t, err)
+		require.Equal(t, int32(700), height)
+	}
+	after, err = store.GetVTXO(t.Context(), desc.Outpoint)
+	require.NoError(t, err)
+	before.CreatedHeight = 700
+	require.Equal(t, before, after)
+}
 
 // newVTXOStoreForTest creates a new VTXOPersistenceStore and the underlying
 // round store for test setup. Returns both to allow tests to set up rounds

@@ -244,6 +244,9 @@ func TestIncomingVTXODurableBehaviorPostponesAuthenticationFailure(
 	require.Zero(t, exec.commits)
 	require.Len(t, saver.saved, 1)
 
+	// An older binary may have saved the indexer's different height
+	// before losing the ack. Derived metadata is not output identity.
+	saver.saved[0].CreatedHeight = 900_100
 	_, err = behavior.Receive(t.Context(), msg, exec).Unpack()
 	require.NoError(t, err)
 	require.Equal(t, 1, exec.commits)
@@ -315,6 +318,7 @@ func TestIncomingVTXODurableBehaviorReloadsTerminatedReplay(t *testing.T) {
 	require.Len(t, saver.saved, 1)
 
 	saver.saved[0].Status = VTXOStatusSpent
+	saver.saved[0].CreatedHeight = 900_100
 	_, err = behavior.Receive(t.Context(), msg, exec).Unpack()
 	require.NoError(t, err)
 	require.Len(t, manager.captured(), 1)
