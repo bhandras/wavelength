@@ -21,6 +21,10 @@ import (
 // unknown root key, a bad signature, or an unsatisfied caveat such as expiry)
 // means the presented credential itself was rejected, so it is reported as
 // Unauthenticated. Errors that already carry a status are left unchanged.
+//
+// A root key store failure during verification is also reported as
+// Unauthenticated: lnd surfaces it as the same untyped error as a malformed
+// macaroon ID, so the two cannot be told apart here.
 func macaroonAuthStatus(err error) error {
 	if err == nil {
 		return nil

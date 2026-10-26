@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"gopkg.in/macaroon-bakery.v2/bakery"
 	"gopkg.in/macaroon-bakery.v2/bakery/checkers"
 	"gopkg.in/macaroon.v2"
 )
@@ -82,6 +83,15 @@ func TestMacaroonAuthFailureStatusCodes(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	// A version-3 ID byte followed by bytes that are not a valid ID
+	// encoding fails while the bakery looks up the root key.
+	badID, err := macaroon.New(
+		[]byte("not the daemon root key"),
+		[]byte{byte(bakery.Version3), 1, 2, 3}, wavedMacaroonLocation,
+		macaroon.V2,
+	)
+	require.NoError(t, err)
+
 	// Recv requires address:write, which the read-only macaroon lacks.
 	// Balance requires info:read, which it grants.
 	recv := wavewalletrpc.WalletService_Recv_FullMethodName
@@ -109,6 +119,12 @@ func TestMacaroonAuthFailureStatusCodes(t *testing.T) {
 		{
 			name:     "wrong root key",
 			md:       macaroonMetadata(t, wrongKey),
+			method:   balance,
+			wantCode: codes.Unauthenticated,
+		},
+		{
+			name:     "malformed macaroon id",
+			md:       macaroonMetadata(t, badID),
 			method:   balance,
 			wantCode: codes.Unauthenticated,
 		},
