@@ -199,6 +199,11 @@ type RoundStore interface {
 
 	DeleteVTXO(ctx context.Context, arg sqlc.DeleteVTXOParams) error
 
+	// RepairVTXOCreatedHeight changes creation height only when the saved
+	// expiry and old height still match the authenticated repair request.
+	RepairVTXOCreatedHeight(ctx context.Context,
+		arg sqlc.RepairVTXOCreatedHeightParams) (int64, error)
+
 	// Per-VTXO ancestry-paths side table (multi-tree ancestry for OOR).
 	InsertVTXOAncestryPath(ctx context.Context,
 		arg sqlc.InsertVTXOAncestryPathParams) error

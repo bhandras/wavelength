@@ -525,6 +525,9 @@ type Querier interface {
 	// budget. The exact kind, failed status, and legacy error guard prevent this
 	// compatibility repair from weakening the normal terminal-to-pending rule.
 	RepairCreditReceivePollCapActivity(ctx context.Context, arg RepairCreditReceivePollCapActivityParams) (int64, error)
+	// Repair only the creation height against the authenticated expiry and the
+	// observed old height. Accept the replacement height too for idempotent retry.
+	RepairVTXOCreatedHeight(ctx context.Context, arg RepairVTXOCreatedHeightParams) (int64, error)
 	// Returns every boarding intent adopted by one dead round to 'confirmed'. The
 	// commitment never broadcast, so the UTXO is exactly as it was before the
 	// round: re-boardable, and sweepable again.

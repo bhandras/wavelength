@@ -472,6 +472,41 @@ func (q *Queries) MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeiting
 	return err
 }
 
+const RepairVTXOCreatedHeight = `-- name: RepairVTXOCreatedHeight :execrows
+UPDATE vtxos
+SET created_height = $3,
+    last_update_time = $6
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+    AND batch_expiry = $4
+    AND (created_height = $5 OR created_height = $3)
+`
+
+type RepairVTXOCreatedHeightParams struct {
+	OutpointHash    []byte
+	OutpointIndex   int32
+	CreatedHeight   int32
+	BatchExpiry     int32
+	CreatedHeight_2 int32
+	LastUpdateTime  int64
+}
+
+// Repair only the creation height against the authenticated expiry and the
+// observed old height. Accept the replacement height too for idempotent retry.
+func (q *Queries) RepairVTXOCreatedHeight(ctx context.Context, arg RepairVTXOCreatedHeightParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, RepairVTXOCreatedHeight,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.CreatedHeight,
+		arg.BatchExpiry,
+		arg.CreatedHeight_2,
+		arg.LastUpdateTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const SumVTXOAmountsByStatus = `-- name: SumVTXOAmountsByStatus :many
 SELECT status,
        CAST(COUNT(*) AS BIGINT) AS vtxo_count,
