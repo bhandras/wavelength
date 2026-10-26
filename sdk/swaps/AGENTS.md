@@ -211,7 +211,11 @@ result into an `IncomingVHTLCNotification`.
 - **vHTLC timing is validated at the admission boundary, via
   `lib/arkscript`.** `vhtlcTiming(VHTLCConfig)` projects the wire DTO into
   `arkscript.VHTLCTiming`. Pay-side `createSwap` calls `ValidateOrder()`
-  before it will fund. Receive-side `validateReceiveClaimWindow` calls
+  before it will fund. Fresh pay-side funding calls `ValidateRefundWindow`
+  with one-week CLTV and sender-only CSV limits; previously initiated funding
+  still reconciles, but an out-of-window legacy session can only query an
+  existing keyed transfer.
+  Receive-side `validateReceiveClaimWindow` calls
   `ValidateClaimWindow` with the current daemon height and the recovery
   policy's `ExitAncestryDelayBlocks` / `MinRecoveryMarginBlocks`, at the
   moment a server event first asks the receiver to accept a policy. Never

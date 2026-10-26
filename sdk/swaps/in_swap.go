@@ -22,6 +22,12 @@ const (
 	refundLocktimeNearBlocks      = uint32(3)
 	refundLocktimeMaxPollMultiple = uint32(30)
 	refundLocktimeMaxPollInterval = time.Minute
+
+	// maxPayRefundWindowBlocks caps both the absolute locktime horizon and
+	// the relative CSV delay on a new pay-side sender-only refund. The
+	// invoice's final CLTV delta cannot cap the total Lightning route.
+	// One week leaves room for routing and claim recovery.
+	maxPayRefundWindowBlocks = uint32(1008)
 )
 
 // InSwapFundingIdempotencyKeyPrefix prefixes the idempotency key carried by
@@ -700,9 +706,9 @@ func (s *paySession) createSwap(ctx context.Context) error {
 	})
 }
 
-// ensureFundingStillSafe refuses to submit or retry funding once the local
-// wall-clock funding deadline is effectively exhausted or the vHTLC refund
-// locktime is already imminent.
+// ensureFundingStillSafe refuses fresh funding once the local wall-clock
+// deadline is exhausted or the sender-only refund timing is unsafe.
+// Already-initiated funding remains eligible for keyed reconciliation.
 func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 	if s.fundingAdmissionClosed() {
 		return s.markExpired(
@@ -725,6 +731,21 @@ func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 			nil,
 			nil,
 		)
+	}
+	// FundingInitiated can represent a previously accepted OOR whose reply
+	// was lost. Keep reconciling those sessions after an upgrade; only a
+	// fresh SwapCreated session can be rejected without stranding funds.
+	if s.state == PayStateSwapCreated {
+		if err := vhtlcTiming(s.cfg.VHTLCConfig).ValidateRefundWindow(
+			height, maxPayRefundWindowBlocks,
+		); err != nil {
+			return s.failTerminal(
+				ctx, fmt.Sprintf("unsafe refund window: %v",
+					err),
+				nil,
+				nil,
+			)
+		}
 	}
 
 	return nil
@@ -943,7 +964,24 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		}
 	}
 
-	existingOnly := s.fundingAdmissionClosed()
+	admissionClosed := s.fundingAdmissionClosed()
+	existingOnly := admissionClosed
+	if !existingOnly {
+		height, err := s.client.daemon.BlockHeight(ctx)
+		if err != nil {
+			return newRetryableActionError(
+				fmt.Errorf("get block height: %w", err),
+			)
+		}
+
+		// A legacy FundingInitiated row may have been persisted before
+		// its first OOR send. An unsafe quote can only be reconciled; a
+		// keyed miss must not turn into a new transfer after upgrade.
+		timing := vhtlcTiming(s.cfg.VHTLCConfig)
+		existingOnly = timing.ValidateRefundWindow(
+			height, maxPayRefundWindowBlocks,
+		) != nil
+	}
 	result, err := s.client.daemon.SendOORWithPolicyOptionsDetails(
 		ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate, OORSendOptions{
 			IdempotencyKey: inSwapFundingIdempotencyKey(
@@ -955,6 +993,13 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 	)
 	if err != nil {
 		if existingOnly && status.Code(err) == codes.NotFound {
+			if !admissionClosed {
+
+				// An older send can still be in flight before
+				// the admission deadline. Keep probing its key.
+				return nil
+			}
+
 			return s.markExpired(
 				ctx, "funding admission closed with no "+
 					"accepted OOR transfer",
