@@ -389,11 +389,29 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   once; the entry is dropped when its last holder or waiter leaves.
   `NewReceiveScriptResponse.expires_at_unix_s` reports the absolute indexer
   registration expiry on both fresh and replayed paths.
-- `GetIndexedVTXOByPkScript` validates an optional canonical policy against
-  the exact output, then signs the query with the daemon identity key. The
-  operator checks non-operator settlement participation. Only an accepted
-  query sets `policy_authorized`; transport or pending-funding failures remain
-  errors. The read creates no receive-script registration and needs no renewal.
+- Indexed `GetIndexedVTXOByPkScript` and `GetVTXOExpiryInfo` share the
+  policy-authorized indexer lookup and signed-target proof boundary. Reads
+  require published wallet-services readiness, not only wallet unlock, so
+  indexer and authenticator initialization happens before concurrent RPC use.
+  Startup returns `Unavailable`; a missing authenticator after readiness is
+  an `Internal` wiring error, not an unknown deadline. Both
+  accept an optional canonical policy matching the query script, sign with
+  the owned receive key for standard outputs or the daemon identity for custom
+  outputs, and set `policy_authorized` only after the indexer
+  accepts the query, including empty answers. No receive-script registration
+  is created. A matching standard policy supplies the script's exit delay;
+  custom or absent policy leaves posture `UNKNOWN`.
+  The returned script must match the query, and signed ancestry must fund its
+  exact outpoint, value, and script. Package checkpoints must feed their Ark
+  transaction, so package count cannot hide serial exit hops. Malformed or
+  conflicting evidence returns `DataLoss`, including absent ancestry.
+  Only local chain confirmation can establish `BatchExpiry`. Explicitly
+  unconfirmed candidates return immediately without a watch. Other candidates,
+  including legacy outputs with missing height hints, allow at most two
+  seconds of confirmation wait; lookup failure preserves the VTXO with
+  `UNKNOWN` posture and zero deadline. Polling after confirmation can classify
+  it. Pending outputs map to `PENDING_ROUND`. Historical status and spend
+  metadata remain visible when chain confirmation is temporarily unavailable.
 - `SignCreditAccountAuthorization` (and the internal
   `RPCServer.SignCreditAccountAuth` behind it) signs a canonical swap
   credit-account request digest with the daemon identity key. It validates

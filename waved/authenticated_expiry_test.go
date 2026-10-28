@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/baselib/actor"
 	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/internal/expiryfixture"
 	"github.com/lightninglabs/wavelength/lib/arkscript"
 	"github.com/lightninglabs/wavelength/lib/tree"
 	"github.com/lightninglabs/wavelength/vtxo"
@@ -20,6 +21,33 @@ import (
 )
 
 type testChainFuture = actor.Future[chainsource.ChainSourceResp]
+
+// TestIndexedExpiryReadBoundsSilentConfirmation proves a stale positive height
+// hint cannot turn a read into the durable 30-second confirmation wait. The
+// valid output survives without a deadline and the one-shot watch is removed.
+func TestIndexedExpiryReadBoundsSilentConfirmation(t *testing.T) {
+	t.Parallel()
+
+	indexed, _ := expiryfixture.Round(
+		t, 10_000, []byte{0x51}, 50, 100, 1,
+	)
+	chainSource := &blockingExpiryChainSource{
+		unregistered: make(chan struct{}, 1),
+	}
+	start := time.Now()
+	verified, err := authenticateIndexedExpiry(
+		t.Context(), indexed, NewBatchExpiryAuthenticator(chainSource),
+	)
+	require.NoError(t, err)
+	require.Zero(t, verified.batchExpiry)
+	require.Positive(t, verified.treeDepth)
+	require.Less(t, time.Since(start), 5*time.Second)
+	select {
+	case <-chainSource.unregistered:
+	default:
+		t.Fatal("read left a confirmation watch registered")
+	}
+}
 
 // TestBatchExpiryAuthenticatorTimesOut verifies that a confirmation backend
 // which never resolves releases the durable caller for retry and unregisters
