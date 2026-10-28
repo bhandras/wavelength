@@ -750,6 +750,52 @@ func (s *VTXOPersistenceStore) ListSelectionCandidatesByStatus(
 	return result, err
 }
 
+// VTXOStatusTotal is the VTXO count and summed amount for one status.
+type VTXOStatusTotal struct {
+	// Status is the VTXO lifecycle status these totals cover.
+	Status vtxo.VTXOStatus
+
+	// Count is the number of VTXOs in this status.
+	Count int64
+
+	// Total is the summed amount of the VTXOs in this status.
+	Total btcutil.Amount
+}
+
+// SumVTXOAmountsByStatus returns the VTXO count and summed amount for every
+// status that has at least one VTXO. The aggregation runs in SQL, so a caller
+// that only needs inventory totals (the metrics scrape) avoids decoding a full
+// descriptor, its keys, and its ancestry for every row.
+func (s *VTXOPersistenceStore) SumVTXOAmountsByStatus(ctx context.Context) (
+	[]VTXOStatusTotal, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []VTXOStatusTotal
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.SumVTXOAmountsByStatus(ctx)
+		if err != nil {
+			return fmt.Errorf("sum VTXO amounts by status: %w", err)
+		}
+
+		totals := make([]VTXOStatusTotal, 0, len(rows))
+		for _, row := range rows {
+			totals = append(totals, VTXOStatusTotal{
+				Status: vtxo.VTXOStatus(row.Status),
+				Count:  row.VtxoCount,
+				Total:  btcutil.Amount(row.AmountSat),
+			})
+		}
+
+		result = totals
+
+		return nil
+	})
+
+	return result, err
+}
+
 // UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 // method for state transitions that don't require additional data.
 func (s *VTXOPersistenceStore) UpdateVTXOStatus(
