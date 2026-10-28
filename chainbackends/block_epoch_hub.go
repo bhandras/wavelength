@@ -16,10 +16,20 @@ import (
 )
 
 const (
-	// blockEpochQueueSize bounds each registration's pending epochs. A
-	// registration that falls this far behind is closed rather than
-	// stalling the shared reader or growing memory without bound.
-	blockEpochQueueSize = 10
+	// blockEpochQueueSize bounds each registration's pending epochs. It
+	// must absorb lnd's catch-up burst after a reconnect, which replays
+	// every block missed during the outage at once: a small queue would
+	// overflow every registration that is not draining in lockstep, and
+	// each would then re-register and see only the tip. 1024 covers about
+	// a week of missed blocks for 8 KiB of channel buffer per
+	// registration. A registration that still falls this far behind is
+	// wedged, and is closed rather than stalling the shared reader or
+	// growing memory without bound.
+	blockEpochQueueSize = 1024
+
+	// blockEpochDedicatedQueueSize buffers a dedicated cursor stream. Its
+	// forwarder blocks instead of overflowing, so it needs no headroom.
+	blockEpochDedicatedQueueSize = 10
 
 	// blockEpochReconnectBackoff is the first delay before the shared
 	// reader reopens a failed upstream stream.
@@ -157,6 +167,9 @@ type blockEpochHub struct {
 	// log resolves the logger for a context.
 	log func(context.Context) btclog.Logger
 
+	// queueSize is each registration's queue capacity.
+	queueSize int
+
 	// minBackoff and maxBackoff bound the reader's reconnect delay.
 	minBackoff time.Duration
 	maxBackoff time.Duration
@@ -225,6 +238,7 @@ func newBlockEpochHub(open blockEpochOpener,
 	return &blockEpochHub{
 		open:       open,
 		log:        log,
+		queueSize:  blockEpochQueueSize,
 		minBackoff: blockEpochReconnectBackoff,
 		maxBackoff: blockEpochMaxReconnectBackoff,
 		ctx:        ctx,
@@ -343,7 +357,7 @@ func (h *blockEpochHub) addSubLocked(
 	up *epochUpstream) *chainntnfs.BlockEpochEvent {
 
 	sub := &epochSub{
-		epochs: make(chan *chainntnfs.BlockEpoch, blockEpochQueueSize),
+		epochs: make(chan *chainntnfs.BlockEpoch, h.queueSize),
 	}
 	if up.tip != nil {
 		sub.epochs <- copyBlockEpoch(up.tip)
@@ -484,7 +498,7 @@ func (h *blockEpochHub) publish(up *epochUpstream,
 			h.log(up.ctx).InfoS(up.ctx, "Closing slow block "+
 				"epoch subscriber",
 				slog.Int("height", int(epoch.Height)),
-				slog.Int("queue_size", blockEpochQueueSize),
+				slog.Int("queue_size", h.queueSize),
 			)
 		}
 	}
@@ -546,7 +560,9 @@ func (h *blockEpochHub) registerDedicated(cursor *chainntnfs.BlockEpoch) (
 		return nil, err
 	}
 
-	epochs := make(chan *chainntnfs.BlockEpoch, blockEpochQueueSize)
+	epochs := make(
+		chan *chainntnfs.BlockEpoch, blockEpochDedicatedQueueSize,
+	)
 	done := make(chan struct{})
 	go func() {
 		defer h.wg.Done()

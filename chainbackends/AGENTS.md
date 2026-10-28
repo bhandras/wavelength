@@ -106,8 +106,12 @@ estimation, and optional v3 package relay via a pluggable `PackageSubmitter`.
   owner reconnect at once. A malformed event is treated as a failure and
   resumes from the same cursor rather than skipping a block. Reconnect retries
   indefinitely.
-- Each registration has a queue of 10 epochs. Overflow closes only that
-  registration; it never drops an individual epoch or stalls the others.
+- Each registration has a queue of 1024 epochs, sized for lnd's catch-up
+  burst after a reconnect, which replays every missed block at once. A
+  small queue would overflow every registration not draining in lockstep and
+  leave each with only the tip after re-registering. Overflow closes only
+  that wedged registration; it never drops an individual epoch or stalls the
+  others.
   Chainsource actors re-register closed registrations, and conf/spend
   finality re-arms against the live tip instead of trusting a closed queue's
   buffered heights. Consumers needing full history must reconcile after an

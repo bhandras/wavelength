@@ -20,8 +20,14 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-// epochTestTimeout bounds every wait in the block epoch hub tests.
-const epochTestTimeout = 5 * time.Second
+const (
+	// epochTestTimeout bounds every wait in the block epoch hub tests.
+	epochTestTimeout = 5 * time.Second
+
+	// testBlockQueueSize shrinks registration queues so overflow tests
+	// need only a handful of blocks.
+	testBlockQueueSize = 10
+)
 
 // blockStreamResult controls a raw gRPC receive, including stream failures.
 type blockStreamResult struct {
@@ -120,7 +126,7 @@ func (c *testBlockClient) RegisterBlockEpochNtfn(ctx context.Context,
 			Height: request.Height,
 			Hash:   append([]byte(nil), request.Hash...),
 		},
-		results: make(chan blockStreamResult, 100),
+		results: make(chan blockStreamResult, 1000),
 	}
 	c.opened <- s
 
@@ -159,7 +165,8 @@ func (k *testBlockChainKit) GetBlockHash(context.Context, int64) (
 }
 
 // newTestBlockNotifier builds the real notifier over a controllable RPC. Its
-// reconnect backoff is shortened so reconnect tests run quickly.
+// reconnect backoff is shortened so reconnect tests run quickly, and its queues
+// are shrunk so overflow tests stay small.
 func newTestBlockNotifier(t *testing.T) (*LndClientChainNotifier,
 	*testBlockClient, *testBlockChainKit) {
 
@@ -173,6 +180,7 @@ func newTestBlockNotifier(t *testing.T) (*LndClientChainNotifier,
 			ChainKit:      kit,
 		},
 	})
+	n.epochs.queueSize = testBlockQueueSize
 	n.epochs.minBackoff = time.Millisecond
 	n.epochs.maxBackoff = 10 * time.Millisecond
 	t.Cleanup(func() { require.NoError(t, n.Stop()) })
@@ -366,13 +374,13 @@ func TestBlockEpochHubSlowSubscriber(t *testing.T) {
 	defer fast.Cancel()
 
 	stream := nextTestBlockStream(t, client)
-	for i := range blockEpochQueueSize + 2 {
+	for i := range testBlockQueueSize + 2 {
 		sendTestBlock(stream, uint32(i+1), byte(i+1))
 		recvTestEpoch(t, fast, int32(i+1), byte(i+1))
 	}
 
 	// The stalled registration keeps what it buffered, then closes.
-	for i := range blockEpochQueueSize {
+	for i := range testBlockQueueSize {
 		recvTestEpoch(t, slow, int32(i+1), byte(i+1))
 	}
 	_, ok := <-slow.Epochs
@@ -427,6 +435,51 @@ func TestBlockEpochHubReconnect(t *testing.T) {
 	require.EqualValues(t, 3, client.calls.Load())
 	require.EqualValues(t, 1, client.maxActive.Load())
 	require.Zero(t, kit.hashCalls.Load())
+}
+
+// TestBlockEpochHubCatchUpBurst verifies that the production queue absorbs
+// lnd's catch-up replay after an outage. On reconnect lnd sends every missed
+// block at once; registrations that are not draining in lockstep must receive
+// all of them in order rather than overflow, re-register, and see only the
+// tip.
+func TestBlockEpochHubCatchUpBurst(t *testing.T) {
+	t.Parallel()
+
+	n, client, _ := newTestBlockNotifier(t)
+	n.epochs.queueSize = blockEpochQueueSize
+
+	// Many more blocks than an outage-free queue needs, but within the
+	// production bound.
+	const missed = 200
+
+	var subs []*chainntnfs.BlockEpochEvent
+	for range 20 {
+		event, err := n.RegisterBlockEpochNtfn(nil)
+		require.NoError(t, err)
+		defer event.Cancel()
+		subs = append(subs, event)
+	}
+
+	stream := nextTestBlockStream(t, client)
+	sendTestBlock(stream, 100, 100)
+	stream.results <- blockStreamResult{err: errors.New("lnd restarted")}
+
+	// No registration reads while lnd replays the missed blocks.
+	reconnected := nextTestBlockStream(t, client)
+	require.EqualValues(t, 100, reconnected.request.Height)
+	for i := range missed {
+		height := uint32(101 + i)
+		sendTestBlock(reconnected, height, byte(height))
+	}
+
+	for _, sub := range subs {
+		recvTestEpoch(t, sub, 100, 100)
+		for i := range missed {
+			height := int32(101 + i)
+			recvTestEpoch(t, sub, height, byte(height))
+		}
+	}
+	require.EqualValues(t, 2, client.calls.Load())
 }
 
 // TestBlockEpochHubMalformedEvent verifies that a malformed event on the
@@ -854,7 +907,7 @@ func TestBlockEpochHubActorOverflow(t *testing.T) {
 
 	// The backend forwarder buffers its own queue in front of the hub's,
 	// so overflow the pair with margin.
-	const backlog = 3 * blockEpochQueueSize
+	const backlog = 3 * testBlockQueueSize
 
 	for _, stop := range []bool{false, true} {
 		name := "recover"
