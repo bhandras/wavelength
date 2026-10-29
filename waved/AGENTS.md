@@ -249,12 +249,19 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   carrying its durable exit policy) runs **before** the chain resolver is
   `Set()`; the force-exit admissions it drives through the VTXO manager are
   buffered by the `LazyChainResolver` and replayed to the unroll registry the
-  instant the resolver is wired. The registry is first-writer-wins on exit
-  policy, so the generic orphan-job scan (`recoverOrphanedUnrollJobs`) runs
-  **after** `Set()` and is itself policy-carrying: it is handed a per-outpoint
-  exit-policy map (`recoveryExitPolicies`, built from the recovery store) and
-  re-admits each orphaned recovery target under its own vHTLC exit policy
-  rather than mislabeling it as a standard timeout.
+  instant the resolver is wired. The registry binds the first exit policy
+  identity a target is admitted under and rejects a conflicting one, so the
+  generic orphan-job scan (`recoverOrphanedUnrollJobs`) runs **after**
+  `Set()`. Its admissions name no policy: they inherit the identity of an
+  armed recovery obligation through the registry's `ArmedExitPolicy` lookup
+  (`armedRecoveryExitPolicy`), so an orphaned recovery target re-admits under
+  its own vHTLC exit policy rather than being mislabeled as a standard
+  timeout. A scan admission that inherits nothing dedups against the bound
+  record and leaves it in force. A mismatch against the policy already bound
+  to the target is non-fatal only when a status probe confirms a live child.
+  The scan then terminal-fails the conflicting recovery and skips the target.
+  A dormant or unreadable bound record fails the boot gate and preserves the
+  recovery obligation for retry.
 - The chain-resolver→unroll bridge (`ensureUnrollFromExpiring`) maps a VTXO
   `ExpiringNotification`'s trigger and optional exit policy into the registry's
   `EnsureUnrollRequest`. `unrollStartTrigger` converts the string-typed
@@ -266,6 +273,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   fraud spends drive exits through the VTXO manager — the same admission path
   as manual, critical-expiry, and vHTLC recovery exits — rather than talking to
   the unroll registry directly.
+- A vHTLC recovery target funded by another wallet is fetched with an
+  exact-policy indexer proof signed by the local recovery key. Before storing
+  foreign packages, the materializer validates the signed path to the exact
+  outpoint, amount, and script, and authenticates expiry against local chain
+  confirmations. Complete recovery descriptors and signed packages are reused
+  locally after restart; foreign inputs never enter coin selection. The first
+  remote materialization has a bounded, caller-owned context.
 - The vHTLC recovery service is wired with an `Exiter: managerExitAdmitter`, a
   `ForceExit` seam that `Ask`s the VTXO manager to force a materialized
   recovery target into unilateral exit. The target materializer
@@ -389,11 +403,29 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   once; the entry is dropped when its last holder or waiter leaves.
   `NewReceiveScriptResponse.expires_at_unix_s` reports the absolute indexer
   registration expiry on both fresh and replayed paths.
-- `GetIndexedVTXOByPkScript` validates an optional canonical policy against
-  the exact output, then signs the query with the daemon identity key. The
-  operator checks non-operator settlement participation. Only an accepted
-  query sets `policy_authorized`; transport or pending-funding failures remain
-  errors. The read creates no receive-script registration and needs no renewal.
+- Indexed `GetIndexedVTXOByPkScript` and `GetVTXOExpiryInfo` share the
+  policy-authorized indexer lookup and signed-target proof boundary. Reads
+  require published wallet-services readiness, not only wallet unlock, so
+  indexer and authenticator initialization happens before concurrent RPC use.
+  Startup returns `Unavailable`; a missing authenticator after readiness is
+  an `Internal` wiring error, not an unknown deadline. Both
+  accept an optional canonical policy matching the query script, sign with
+  the owned receive key for standard outputs or the daemon identity for custom
+  outputs, and set `policy_authorized` only after the indexer
+  accepts the query, including empty answers. No receive-script registration
+  is created. A matching standard policy supplies the script's exit delay;
+  custom or absent policy leaves posture `UNKNOWN`.
+  The returned script must match the query, and signed ancestry must fund its
+  exact outpoint, value, and script. Package checkpoints must feed their Ark
+  transaction, so package count cannot hide serial exit hops. Malformed or
+  conflicting evidence returns `DataLoss`, including absent ancestry.
+  Only local chain confirmation can establish `BatchExpiry`. Explicitly
+  unconfirmed candidates return immediately without a watch. Other candidates,
+  including legacy outputs with missing height hints, allow at most two
+  seconds of confirmation wait; lookup failure preserves the VTXO with
+  `UNKNOWN` posture and zero deadline. Polling after confirmation can classify
+  it. Pending outputs map to `PENDING_ROUND`. Historical status and spend
+  metadata remain visible when chain confirmation is temporarily unavailable.
 - `SignCreditAccountAuthorization` (and the internal
   `RPCServer.SignCreditAccountAuth` behind it) signs a canonical swap
   credit-account request digest with the daemon identity key. It validates
@@ -417,11 +449,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   `OutboxErrorEvent` instead of an `Adapt` error that would stall the
   serverconn ingress cursor on the offending envelope (`server.go`).
   `oorRejectRetry` classifies the event's `Retryable` flag: it is `false`
-  (terminal) for every typed reject except the two transient codes,
+  (terminal) for every typed reject except the three transient codes,
   `OOR_REJECT_INPUT_NOT_SPENDABLE` (the operator has not yet caught up to the
-  input's commitment confirmation) and `OOR_REJECT_USER_BALANCE` (the
-  recipient mailbox is over its balance cap), which re-drive the submit after
-  `oorTransientRejectRetryDelay`. That retry is now bounded: the FSM's
+  input's commitment confirmation), `OOR_REJECT_USER_BALANCE` (the recipient
+  mailbox is over its balance cap), and `OOR_REJECT_INTERNAL` (a transient
+  internal fault on the operator, e.g. a backing store briefly unavailable),
+  which re-drive the submit after `oorTransientRejectRetryDelay`. That retry
+  is now bounded: the FSM's
   `AwaitingSubmitAccepted` transition (`handleSubmitOutboxError` in
   `oor/transitions.go`) gives up terminally once the cumulative retry window
   exceeds `OORConfig.MaxTransientSubmitRetry` (default 1h), persisting the

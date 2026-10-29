@@ -145,6 +145,28 @@ func AuthenticateBatchExpiry(ctx context.Context, ancestry []Ancestry,
 	return int32(earliest), nil
 }
 
+// ValidateIncomingBatchExpiry checks a locally authenticated deadline against
+// the incoming creation metadata before it can be persisted. Accepting a
+// creation height above the deadline would leave the new coin permanently
+// unmonitored by the legacy consistency guard. Zero creation heights remain
+// permitted for recovery compatibility. This check does not authenticate the
+// creation height or the supplied deadline itself.
+func ValidateIncomingBatchExpiry(batchExpiry, createdHeight int32) error {
+	if batchExpiry <= 0 {
+		return invalidBatchExpiry(
+			"derived batch expiry must be positive",
+		)
+	}
+	if createdHeight > batchExpiry {
+		return invalidBatchExpiry(
+			"creation height %d exceeds authenticated batch "+
+				"expiry %d", createdHeight, batchExpiry,
+		)
+	}
+
+	return nil
+}
+
 // validateExpiryFragment binds one ancestry tree to its sweep policy and
 // recomputed root output.
 func validateExpiryFragment(fragment Ancestry) error {

@@ -162,6 +162,11 @@ type RoundStore interface {
 		error,
 	)
 
+	// SumVTXOAmountsByStatus returns the VTXO count and summed amount
+	// per status, without decoding any descriptor.
+	SumVTXOAmountsByStatus(ctx context.Context) (
+		[]sqlc.SumVTXOAmountsByStatusRow, error)
+
 	UpdateVTXOStatus(
 		ctx context.Context, arg sqlc.UpdateVTXOStatusParams,
 	) error

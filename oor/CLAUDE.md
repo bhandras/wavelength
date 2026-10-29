@@ -88,6 +88,8 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
   (`arkscript.MultiSigCollabTapLeaf(clientKey, operatorKey)`), never
   single-sig; resumed custom-spend inputs are re-verified against the VTXO
   pkScript before signing.
+- Outgoing and incoming OOR admission executes every Ark input witness in the
+  exact package the client carries forward or persists.
 - Point-of-no-return is server co-signing of the checkpoint transaction(s):
   after that, the client must resume with byte-identical co-signed PSBTs
   (deterministic construction), not re-derive them.
@@ -105,8 +107,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/oor.<Sym
 - Incoming batch expiry is authenticated by
   `AuthenticateIncomingMetadataRequest` before materialization opens its DB
   transaction. Indexer expiry scalars are discarded. Chain failures retry the
-  outbox; invalid sweep/tree evidence fails terminally. The descriptor's
-  relative expiry comes from its matching standard or custom policy template,
+  outbox; invalid sweep/tree evidence fails terminally. Creation heights above
+  the authenticated deadline also fail terminally before a VTXO is saved,
+  including on materialization replay and synchronous recovery. The
+  descriptor's relative expiry comes from its matching policy template,
   not from operator configuration. Custom policies consider only canonical
   block-mode CSV sequences; CLTV non-final sentinels are not block delays.
 - Snapshots are versioned per direction (`OutgoingSnapshot.Version = 6`,

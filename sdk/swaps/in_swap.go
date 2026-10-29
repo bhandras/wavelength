@@ -22,13 +22,27 @@ const (
 	refundLocktimeNearBlocks      = uint32(3)
 	refundLocktimeMaxPollMultiple = uint32(30)
 	refundLocktimeMaxPollInterval = time.Minute
+
+	// maxPayRefundWindowBlocks caps both the absolute locktime horizon and
+	// the relative CSV delay on a new pay-side sender-only refund. The
+	// invoice's final CLTV delta cannot cap the total Lightning route.
+	// One week leaves room for routing and claim recovery.
+	maxPayRefundWindowBlocks = uint32(1008)
 )
+
+// InSwapFundingIdempotencyKeyPrefix prefixes the idempotency key carried by
+// every in-swap funding OOR dispatch. The wallet history layer parses this
+// prefix to correlate funding legs whose swap record never persisted its
+// funding session id. It is part of the durable dispatch contract: keys
+// written with it live in the dispatch-attempt registry, so it must not
+// change.
+const InSwapFundingIdempotencyKeyPrefix = "in-swap-funding:"
 
 // inSwapFundingIdempotencyKey derives the daemon-side OOR identity for one
 // Ark-to-Lightning vHTLC funding intent. The payment hash is the durable swap
 // identity, so this format must remain stable across process restarts.
 func inSwapFundingIdempotencyKey(hash lntypes.Hash) string {
-	return fmt.Sprintf("in-swap-funding:%s", hash.String())
+	return InSwapFundingIdempotencyKeyPrefix + hash.String()
 }
 
 // PayState identifies the client-side lifecycle state of an Ark-to-Lightning
@@ -692,9 +706,9 @@ func (s *paySession) createSwap(ctx context.Context) error {
 	})
 }
 
-// ensureFundingStillSafe refuses to submit or retry funding once the local
-// wall-clock funding deadline is effectively exhausted or the vHTLC refund
-// locktime is already imminent.
+// ensureFundingStillSafe refuses fresh funding once the local wall-clock
+// deadline is exhausted or the sender-only refund timing is unsafe.
+// Already-initiated funding remains eligible for keyed reconciliation.
 func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 	if s.fundingAdmissionClosed() {
 		return s.markExpired(
@@ -722,6 +736,21 @@ func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 			nil,
 			nil,
 		)
+	}
+	// FundingInitiated can represent a previously accepted OOR whose reply
+	// was lost. Keep reconciling those sessions after an upgrade; only a
+	// fresh SwapCreated session can be rejected without stranding funds.
+	if s.state == PayStateSwapCreated {
+		if err := vhtlcTiming(s.cfg.VHTLCConfig).ValidateRefundWindow(
+			height, maxPayRefundWindowBlocks,
+		); err != nil {
+			return s.failTerminal(
+				ctx, fmt.Sprintf("unsafe refund window: %v",
+					err),
+				nil,
+				nil,
+			)
+		}
 	}
 
 	return nil
@@ -940,7 +969,24 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 		}
 	}
 
-	existingOnly := s.fundingAdmissionClosed()
+	admissionClosed := s.fundingAdmissionClosed()
+	existingOnly := admissionClosed
+	if !existingOnly {
+		height, err := s.client.daemon.BlockHeight(ctx)
+		if err != nil {
+			return newRetryableActionError(
+				fmt.Errorf("get block height: %w", err),
+			)
+		}
+
+		// A legacy FundingInitiated row may have been persisted before
+		// its first OOR send. An unsafe quote can only be reconciled; a
+		// keyed miss must not turn into a new transfer after upgrade.
+		timing := vhtlcTiming(s.cfg.VHTLCConfig)
+		existingOnly = timing.ValidateRefundWindow(
+			height, maxPayRefundWindowBlocks,
+		) != nil
+	}
 	result, err := s.client.daemon.SendOORWithPolicyOptionsDetails(
 		ctx, s.cfg.AmountSat, s.vhtlcPolicyTemplate, OORSendOptions{
 			IdempotencyKey: inSwapFundingIdempotencyKey(
@@ -952,6 +998,13 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 	)
 	if err != nil {
 		if existingOnly && status.Code(err) == codes.NotFound {
+			if !admissionClosed {
+
+				// An older send can still be in flight before
+				// the admission deadline. Keep probing its key.
+				return nil
+			}
+
 			return s.markExpired(
 				ctx, "funding admission closed with no "+
 					"accepted OOR transfer",
@@ -991,8 +1044,9 @@ func (s *paySession) ensureFundingSubmitted(ctx context.Context,
 			)
 		}
 
-		// The daemon rejects a send for lack of spendable funds, or
-		// because the liquidity is reserved by another operation,
+		// The daemon rejects a send for lack of spendable funds,
+		// because the liquidity is reserved by another operation, or
+		// because every covering selection leaves sub-minimum change,
 		// before it selects or locks any input and before it records a
 		// keyed dispatch attempt. That rejection can also be this
 		// swap's own earlier attempt: it holds the only spendable
@@ -1348,7 +1402,8 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 			// polling on a readable height instead of exiting
 			// the wait on a funded vHTLC.
 			s.client.log.DebugS(
-				ctx, "Block height unavailable; retrying",
+				ctx,
+				"Block height unavailable; retrying",
 				slog.String("err", err.Error()),
 			)
 			if err := s.waitForNextPoll(ctx); err != nil {

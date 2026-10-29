@@ -447,11 +447,12 @@ func (h *IncomingVTXOHandler) prepare(ctx context.Context,
 			),
 		)
 	}
-	if extras.BatchExpiry <= 0 {
-		err := fmt.Errorf("%w: derived batch expiry must be positive",
-			ErrInvalidBatchExpiryEvidence)
-		h.log.WarnS(ctx, "Failed to authenticate incoming VTXO expiry",
-			err,
+	if err := ValidateIncomingBatchExpiry(
+		extras.BatchExpiry, extras.CreatedHeight,
+	); err != nil {
+
+		h.log.InfoS(ctx, "Rejected incoming VTXO expiry",
+			slog.String("error", err.Error()),
 			slog.String("outpoint", outpoint.String()),
 		)
 		h.emitReceived(ctx, "failed")

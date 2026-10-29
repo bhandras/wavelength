@@ -971,9 +971,10 @@ func TestPaySessionKeepsRecoveryWhenFundingOORFailsPastPONR(t *testing.T) {
 }
 
 // TestPaySessionFundingAdmissionRejectionIsTerminal asserts that a daemon
-// rejection raised before any input is selected (insufficient funds or locked
-// liquidity) fails the pay swap terminally. The swap must not stay resumable,
-// because a later restart would otherwise pay an invoice the caller abandoned.
+// rejection raised before any input is selected (insufficient funds, locked
+// liquidity, or sub-minimum change) fails the pay swap terminally. The swap
+// must not stay resumable, because a later restart would otherwise pay an
+// invoice the caller abandoned.
 func TestPaySessionFundingAdmissionRejectionIsTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -991,6 +992,12 @@ func TestPaySessionFundingAdmissionRejectionIsTerminal(t *testing.T) {
 			name: "locked liquidity",
 			code: codes.Aborted,
 			msg:  "vtxo liquidity temporarily locked",
+		},
+		{
+			name: "sub-minimum change",
+			code: codes.OutOfRange,
+			msg: "change below minimum vtxo amount: change 969 " +
+				"is below minimum change amount 1000",
 		},
 	}
 
@@ -1086,8 +1093,8 @@ func TestPaySessionFundingAdmissionRejectionIsTerminal(t *testing.T) {
 	}
 }
 
-// TestPaySessionFundingRejectionAdoptsInFlightAttempt asserts that a locked or
-// exhausted rejection does not fail the swap when the existing-only probe finds
+// TestPaySessionFundingRejectionAdoptsInFlightAttempt asserts that an
+// admission rejection does not fail the swap when the existing-only probe finds
 // the swap's own accepted attempt. The first send's response was lost and its
 // attempt row is not yet committed, so the keyed replay misses it and the
 // selection sees the attempt's own locked inputs.
@@ -1095,7 +1102,7 @@ func TestPaySessionFundingRejectionAdoptsInFlightAttempt(t *testing.T) {
 	t.Parallel()
 
 	for _, code := range []codes.Code{
-		codes.Aborted, codes.ResourceExhausted,
+		codes.Aborted, codes.ResourceExhausted, codes.OutOfRange,
 	} {
 		t.Run(code.String(), func(t *testing.T) {
 			t.Parallel()
@@ -3480,6 +3487,297 @@ func TestPaySessionFailsNearRefundLocktime(t *testing.T) {
 	require.Equal(t, PayStateFailed, resumed.State())
 	require.Contains(t, resumed.TerminalReason(), "refund locktime")
 	require.Empty(t, resumed.InterventionReason())
+}
+
+// TestPaySessionBoundsNewRefundWindow verifies that a fresh pay session never
+// funds a vHTLC whose sender-only refund is too far away, while an accepted
+// window still submits funding.
+func TestPaySessionBoundsNewRefundWindow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		locktime  uint32
+		senderCSV uint32
+		wantErr   bool
+	}{
+		{
+			name:     "normal quote",
+			locktime: 612,
+		},
+		{
+			name:     "exact ceiling",
+			locktime: 1108,
+		},
+		{
+			name:      "sender CSV at ceiling",
+			locktime:  612,
+			senderCSV: 1008,
+		},
+		{
+			name:      "sender CSV past ceiling",
+			locktime:  612,
+			senderCSV: 1009,
+			wantErr:   true,
+		},
+		{
+			name:      "sender CSV maximum",
+			locktime:  612,
+			senderCSV: 65_535,
+			wantErr:   true,
+		},
+		{
+			name:     "one block past ceiling",
+			locktime: 1109,
+			wantErr:  true,
+		},
+		{
+			name:     "far future",
+			locktime: 1_500_100,
+			wantErr:  true,
+		},
+		{
+			name:     "timestamp",
+			locktime: 500_000_000,
+			wantErr:  true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			clientPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			serverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			preimage, err := NewPreimage()
+			require.NoError(t, err)
+			invoice := testValidPayInvoice(t, preimage)
+
+			serverConn := &testInSwapServerConn{
+				cfg: testInSwapConfig(
+					serverPriv.PubKey(), preimage,
+					time.Now().Add(time.Minute),
+				),
+			}
+			serverConn.cfg.VHTLCConfig.RefundLocktime =
+				test.locktime
+			if test.senderCSV != 0 {
+				serverConn.cfg.VHTLCConfig.
+					UnilateralRefundWithoutReceiverDelay =
+					test.senderCSV
+			}
+			daemonConn := &testDaemonConn{
+				identityKey:   clientPriv.PubKey(),
+				operatorKey:   operatorPriv.PubKey(),
+				blockHeight:   100,
+				sendSessionID: "funding-session",
+				sendOutpoint:  "funding-session:0",
+			}
+			store := newTestSwapStore(t)
+			client := configureTestPayClient(
+				NewSwapClientWithStore(
+					serverConn, daemonConn, nil, nil, store,
+				),
+			)
+
+			session, err := client.StartPayViaLightning(
+				t.Context(), invoice, testInSwapFeeSat,
+			)
+			require.NoError(t, err)
+			err = session.fundOrAdoptVHTLC(t.Context())
+			if !test.wantErr {
+				require.NoError(t, err)
+				require.Equal(t, 1, daemonConn.sendPolicyCalls)
+				sendOpts := daemonConn.sendPolicyOpts[0]
+				require.False(t, sendOpts.ExistingOnly)
+
+				return
+			}
+
+			require.ErrorContains(t, err, "unsafe refund window")
+			require.Zero(t, daemonConn.sendPolicyCalls)
+			require.Equal(t, PayStateFailed, session.State())
+			resumed, err := client.ResumePayViaLightning(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+			require.Equal(t, PayStateFailed, resumed.State())
+		})
+	}
+}
+
+// TestPaySessionReconcilesLegacyUnsafeRefundFunding covers a pre-upgrade
+// funding intent that may or may not have reached the daemon before exit.
+func TestPaySessionReconcilesLegacyUnsafeRefundFunding(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		locktime  uint32
+		senderCSV uint32
+		accepted  bool
+	}{
+		{
+			name:     "far locktime with no prior send",
+			locktime: 1_500_100,
+		},
+		{
+			name:     "far locktime accepted after first probe",
+			locktime: 1_500_100,
+			accepted: true,
+		},
+		{
+			name:      "long sender CSV with no prior send",
+			locktime:  612,
+			senderCSV: 65_535,
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			clientPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			operatorPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			serverPriv, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+			preimage, err := NewPreimage()
+			require.NoError(t, err)
+			invoice := testValidPayInvoice(t, preimage)
+			fundingResult := &OORSendResult{
+				SessionID:         "funding-session",
+				RecipientOutpoint: "funding-session:0",
+			}
+			now := time.Now()
+			serverConn := &testInSwapServerConn{
+				cfg: testInSwapConfig(
+					serverPriv.PubKey(), preimage,
+					now.Add(time.Minute),
+				),
+			}
+			serverConn.cfg.VHTLCConfig.RefundLocktime =
+				test.locktime
+			if test.senderCSV != 0 {
+				serverConn.cfg.VHTLCConfig.
+					UnilateralRefundWithoutReceiverDelay =
+					test.senderCSV
+			}
+			daemonConn := &testDaemonConn{
+				identityKey: clientPriv.PubKey(),
+				operatorKey: operatorPriv.PubKey(),
+				blockHeight: 100,
+				sendPolicyHook: func(call int, _ string) (
+					*OORSendResult, error) {
+
+					if call == 1 || !test.accepted {
+						return nil, status.Error(
+							codes.NotFound,
+							"no accepted funding",
+						)
+					}
+
+					return fundingResult, nil
+				},
+			}
+			store := newTestSwapStore(t)
+			client := configureTestPayClient(
+				NewSwapClientWithStore(
+					serverConn, daemonConn, nil, nil, store,
+				),
+			)
+			client.now = func() time.Time { return now }
+			session, err := client.StartPayViaLightning(
+				t.Context(), invoice, testInSwapFeeSat,
+			)
+			require.NoError(t, err)
+			transitionToFunding := func() error {
+				return session.transition(
+					payEventFundingInitiated,
+				)
+			}
+			err = session.mutateAndPersist(
+				t.Context(), transitionToFunding,
+			)
+			require.NoError(t, err)
+
+			resumedClient := configureTestPayClient(
+				NewSwapClientWithStore(
+					serverConn, daemonConn, nil, nil, store,
+				),
+			)
+			resumedClient.now = func() time.Time { return now }
+			resumed, err := resumedClient.ResumePayViaLightning(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+			require.NoError(
+				t,
+				resumed.ensureFundingStillSafe(
+					t.Context(),
+				),
+			)
+			require.NoError(
+				t,
+				resumed.ensureFundingSubmitted(
+					t.Context(), true,
+				),
+			)
+			require.Equal(
+				t, PayStateFundingInitiated, resumed.State(),
+			)
+			require.True(
+				t, daemonConn.sendPolicyOpts[0].ExistingOnly,
+			)
+
+			if test.accepted {
+				require.NoError(
+					t,
+					resumed.ensureFundingSubmitted(
+						t.Context(), true,
+					),
+				)
+				require.Equal(
+					t, PayStateVHTLCFunded, resumed.State(),
+				)
+				require.Equal(t, 1, daemonConn.armRecoveryCalls)
+			} else {
+				now = now.Add(2 * time.Minute)
+				err = resumed.ensureFundingSubmitted(
+					t.Context(), true,
+				)
+				require.ErrorIs(t, err, errSwapExpired)
+				require.Equal(
+					t, PayStateExpired, resumed.State(),
+				)
+			}
+			require.True(
+				t, daemonConn.sendPolicyOpts[1].ExistingOnly,
+			)
+			require.Equal(t, 2, daemonConn.sendPolicyCalls)
+
+			reloaded, err := resumedClient.ResumePayViaLightning(
+				t.Context(), preimage.Hash(),
+			)
+			require.NoError(t, err)
+			require.Equal(t, resumed.State(), reloaded.State())
+			if test.accepted {
+				require.Equal(
+					t, fundingResult.SessionID,
+					reloaded.fundingSessionID,
+				)
+				require.Equal(
+					t, fundingResult.RecipientOutpoint,
+					reloaded.vhtlcOutpoint,
+				)
+			}
+		})
+	}
 }
 
 // TestPaySessionExpiresBeforeUnsafeLateFunding asserts the client refuses to

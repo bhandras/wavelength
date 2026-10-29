@@ -472,6 +472,50 @@ func (q *Queries) MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeiting
 	return err
 }
 
+const SumVTXOAmountsByStatus = `-- name: SumVTXOAmountsByStatus :many
+SELECT status,
+       CAST(COUNT(*) AS BIGINT) AS vtxo_count,
+       CAST(COALESCE(SUM(amount), 0) AS BIGINT) AS amount_sat
+FROM vtxos
+GROUP BY status
+ORDER BY status
+`
+
+type SumVTXOAmountsByStatusRow struct {
+	Status    int32
+	VtxoCount int64
+	AmountSat int64
+}
+
+// SumVTXOAmountsByStatus returns the VTXO count and total amount per status.
+// It backs the scrape-time inventory gauges, which only need these two
+// figures, so it avoids decoding full descriptors for every row on every
+// scrape. Unlike SumUnspentVTXOAmountsByStatus it does not filter on the
+// spent flag: the gauges count every row in a status, matching
+// ListVTXOsByStatus.
+func (q *Queries) SumVTXOAmountsByStatus(ctx context.Context) ([]SumVTXOAmountsByStatusRow, error) {
+	rows, err := q.db.QueryContext(ctx, SumVTXOAmountsByStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SumVTXOAmountsByStatusRow
+	for rows.Next() {
+		var i SumVTXOAmountsByStatusRow
+		if err := rows.Scan(&i.Status, &i.VtxoCount, &i.AmountSat); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const UpdateVTXOStatus = `-- name: UpdateVTXOStatus :exec
 UPDATE vtxos
 SET status = $3,
