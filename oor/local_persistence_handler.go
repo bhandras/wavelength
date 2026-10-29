@@ -205,6 +205,12 @@ func (h *LocalPersistenceOutboxHandler) handleAuthenticateIncomingMetadata(
 			return nil, err
 		}
 
+		if err := vtxo.ValidateIncomingBatchExpiry(
+			expiry, matches[i].Metadata.CreatedHeight,
+		); err != nil {
+			return nil, &terminalOutboxError{cause: err}
+		}
+
 		matches[i].Metadata.BatchExpiry = expiry
 		matches[i].Metadata.ExpiryAuthenticated = true
 	}
@@ -261,6 +267,11 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 			return fmt.Errorf("incoming output %d batch expiry is "+
 				"not authenticated",
 				msg.MetadataMatches[i].OutputIndex)
+		}
+		if err := vtxo.ValidateIncomingBatchExpiry(
+			metadata.BatchExpiry, metadata.CreatedHeight,
+		); err != nil {
+			return &terminalOutboxError{cause: err}
 		}
 	}
 
@@ -483,10 +494,10 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(ctx context.Context,
 			metadata.BatchExpiry = expiry
 			metadata.ExpiryAuthenticated = true
 		}
-		if metadata.BatchExpiry <= 0 {
-			return nil, fmt.Errorf("incoming output %d "+
-				"authenticated batch expiry must be positive",
-				recipient.OutputIndex)
+		if err := vtxo.ValidateIncomingBatchExpiry(
+			metadata.BatchExpiry, metadata.CreatedHeight,
+		); err != nil {
+			return nil, &terminalOutboxError{cause: err}
 		}
 
 		logger(ctx).DebugS(ctx, "Resolved incoming metadata",
