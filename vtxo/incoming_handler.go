@@ -82,30 +82,10 @@ const (
 	incomingVTXOMsgTLVType   tlv.Type = 0
 	incomingVTXORedriveDelay          = 30 * time.Second
 
-	// incomingVTXOPostponeHorizon bounds how long one delivery keeps
-	// retrying a transient failure before it is failed for real. Retry
-	// exists to ride out an indexer lagging behind the chain or a chain
-	// source mid-deploy, so waiting on an outpoint that is merely not
-	// indexed yet is the point; waiting without a bound is not. Past the
-	// horizon the delivery takes the ordinary failure path instead, which
-	// ends in the dead-letter table rather than an eternal redrive. The
-	// horizon is measured from the durable row's own enqueue time, so it
-	// costs nothing to consult and cannot be reset by redelivery, and it
-	// mirrors the OOR registry's own ten-minute bound. It applies to the
-	// ancestry-missing and indexer-error causes; a wait on a chain
-	// confirmation uses incomingVTXOConfirmationHorizon instead.
+	// incomingVTXOPostponeHorizon bounds indexer and persistence retries by
+	// the durable row's enqueue age. Confirmation waits have no time limit:
+	// elapsed wall time cannot prove a commitment will never confirm.
 	incomingVTXOPostponeHorizon = 10 * time.Minute
-
-	// incomingVTXOConfirmationHorizon bounds the commitment-unconfirmed
-	// cause, and only that cause. That wait belongs to the Bitcoin
-	// network rather than to the indexer: a round's commitment
-	// transaction has been broadcast and needs its first confirmation,
-	// and a single block can take well over ten minutes. Failing the
-	// delivery at the indexer-sized bound would dead-letter an event that
-	// is confirming exactly as expected, so this bound is sized to real
-	// confirmation time instead. An hour rides out several slow blocks
-	// while still ending a wait that will never clear.
-	incomingVTXOConfirmationHorizon = time.Hour
 )
 
 // TLVType returns the durable-mailbox type identifier for an incoming event.
@@ -448,8 +428,8 @@ func (h *IncomingVTXOHandler) prepare(ctx context.Context,
 		ctx, outpoint, pkScript, rec.ClientKey,
 	)
 	if err != nil {
-		h.log.WarnS(ctx, "Failed to authenticate incoming VTXO expiry",
-			err,
+		h.log.DebugS(ctx, "Failed to authenticate incoming VTXO expiry",
+			slog.Any("error", err),
 			slog.String("outpoint", outpoint.String()),
 		)
 		if errors.Is(err, ErrInvalidBatchExpiryEvidence) {
@@ -609,48 +589,30 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 // incomingVTXODurableBehavior keeps slow indexer and chain I/O outside the
 // delivery-store writer transaction. Persistence and manager notification are
 // replay-safe, then one short Commit consumes the durable event. Transient
-// failures are postponed without spending the mailbox attempt budget, bounded
-// per cause: incomingVTXOPostponeHorizon for an indexer that has not caught up
-// and incomingVTXOConfirmationHorizon while a commitment awaits its first
-// confirmation.
+// failures are postponed without spending the mailbox attempt budget.
+// Indexer and persistence retries are bounded by enqueue age; confirmation
+// waits remain pending until the chain source can authenticate the commitment.
 type incomingVTXODurableBehavior struct {
 	handler *IncomingVTXOHandler
 }
 
-// postponeRetry converts a retryable incoming-event failure into a postpone
-// request, leaving every other error untouched, and gives up once the
-// delivery's own age reaches the horizon for its cause.
+// postponeRetry postpones a retryable incoming-event failure. Indexer and
+// persistence failures enter the ordinary retry path after ten minutes from
+// enqueue, then dead-letter if they persist. A missing enqueue timestamp leaves
+// the delivery pending because its age is unknown.
 //
-// A postpone never consumes an attempt, so nothing else ends the wait: a
-// pushed event whose outpoint never shows up in the indexer would keep a
-// delivery redriving forever, along with its paginated scan, its store writes
-// and its warning logs. The horizon is what makes that wait finite, and it is
-// measured from the durable row's enqueue timestamp rather than from
-// behavior-side state, so redelivery does not reset the age. A delivery with no
-// timestamp (a behavior invoked directly in a test, or a store that does not
-// report one) postpones as before, since absence means "no horizon
-// information", not "infinitely old".
-//
-// Past the horizon the plain error is returned, which routes the delivery
-// through the actor's ordinary Tell retry policy and then to the dead-letter
-// table. The coarse cause is reported either way so a wait that never clears is
-// visible without reading logs.
-//
-// The horizon is cause-aware, because the causes are not waiting on the same
-// clock. An indexer that has not indexed the outpoint yet, or a chain source
-// that could not be queried, is expected to clear in minutes and keeps the
-// ten-minute bound. A commitment waiting for its first on-chain confirmation is
-// waiting on the Bitcoin network, where one block can take longer than that, so
-// it gets incomingVTXOConfirmationHorizon; otherwise a round confirming
-// normally would be dead-lettered while still inside its first block. The
-// horizon is selected from the same cause value the postpone metric is labelled
-// with, so a cause's bound and its label cannot disagree.
+// Confirmation waits have no wall-clock deadline. A slow block or a chain
+// backend catching up after downtime cannot prove an owned VTXO is invalid, and
+// a dead-lettered event has no automatic redrive. Keep waiting and reporting
+// the cause so the receive can materialize once confirmation becomes available.
 func (b *incomingVTXODurableBehavior) postponeRetry(ctx context.Context,
 	err error, cause string) error {
 
-	horizon := incomingPostponeHorizon(cause)
+	horizon := incomingVTXOPostponeHorizon
 	enqueuedAt, ok := actor.DeliveryEnqueuedAt(ctx)
-	if ok && time.Since(enqueuedAt) >= horizon {
+	if cause != metrics.PostponeCauseChainUnconfirmed && ok &&
+		time.Since(enqueuedAt) >= horizon {
+
 		b.handler.log.WarnS(ctx, "Incoming VTXO delivery exceeded its "+
 			"postpone horizon; failing it to the ordinary retry "+
 			"path", err,
@@ -672,19 +634,6 @@ func (b *incomingVTXODurableBehavior) postponeRetry(ctx context.Context,
 
 	return fmt.Errorf("%w: %w", err,
 		actor.Postpone(incomingVTXORedriveDelay))
-}
-
-// incomingPostponeHorizon returns the postpone bound for a coarse cause. Only a
-// wait on a chain confirmation is sized to block time; every other cause is
-// waiting on an indexer or a chain source and keeps the ten-minute bound.
-func incomingPostponeHorizon(cause string) time.Duration {
-	switch cause {
-	case metrics.PostponeCauseChainUnconfirmed:
-		return incomingVTXOConfirmationHorizon
-
-	default:
-		return incomingVTXOPostponeHorizon
-	}
 }
 
 // incomingPostponeCause buckets a retryable incoming-event failure into the

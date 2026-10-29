@@ -49,10 +49,10 @@ OOR/round state).
   counts once more, so one abandoned delivery shows up several times.
   Labelled by coarse `PostponeCause` (`missing`, `chain-unconfirmed`,
   `indexer-error`, `server-error`, else `other`). The horizon is per cause, not
-  per family: `vtxo` bounds an indexer wait at ten minutes but a commitment
-  confirmation at an hour, because one Bitcoin block can outlast the indexer
-  bound while the event is still confirming normally. The counters therefore
-  report how long a wait has run, not how close it is to a single deadline.
+  per family: `vtxo` bounds an indexer wait at ten minutes while commitment
+  confirmation waits have no wall-clock deadline. A slow block cannot prove a
+  receive is invalid. These counters report retry decisions, not elapsed time
+  or progress toward a deadline.
 
 ## Relationships
 

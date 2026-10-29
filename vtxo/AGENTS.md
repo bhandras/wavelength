@@ -104,15 +104,13 @@ when the local wallet owns the receive script.
   fetches ancestry, requires a positive chain-authenticated batch expiry,
   persists the descriptor, and tells the manager via
   `VTXOsMaterializedNotification`. Transient failures postpone the durable
-  event without consuming its retry budget, bounded by a per-cause horizon
-  measured from `actor.DeliveryEnqueuedAt`: ten minutes while an outpoint is
-  missing from the indexer or the indexer lookup fails (mirroring the OOR
-  registry), and an hour while a commitment waits for its first confirmation,
-  since one Bitcoin block can outlast ten minutes and the event is healthy the
-  whole time. Past the horizon the failure is returned plain so the ordinary
-  Tell retry policy can dead-letter the delivery instead of redriving it
-  forever, and both outcomes are reported as a `metrics.DeliveryPostponeMsg`
-  with a coarse cause. The
+  event without consuming its retry budget. Indexer and persistence failures
+  are bounded by ten minutes from `actor.DeliveryEnqueuedAt`; past that horizon
+  the ordinary Tell retry policy can dead-letter the event. Confirmation waits,
+  including incomplete confirmation snapshots, have no wall-clock deadline:
+  elapsed time cannot prove a commitment will never confirm, and dead letters
+  have no automatic redrive. Both outcomes emit `metrics.DeliveryPostponeMsg`
+  with a coarse cause; repeated authentication failures log at `Debug`. The
   push's expiry and relative-expiry scalars are not trusted. Only created
   events are acted on; unknown event kinds and unowned scripts are silently
   ignored.

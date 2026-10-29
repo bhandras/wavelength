@@ -856,11 +856,10 @@ func newPostponeTestBehavior(t *testing.T, pkScript []byte, fetchErr error) (
 }
 
 // TestIncomingVTXOPostponeHorizonPerCause asserts the horizon is sized to what
-// each cause is actually waiting for. An indexer that has not caught up, or a
-// chain source that could not be queried, gives up at the ten-minute bound. A
-// commitment waiting for its first confirmation is still postponed well past
-// that bound, because a single Bitcoin block can take longer than it, and only
-// fails at the confirmation-sized bound.
+// each cause is actually waiting for. Missing ancestry and failed indexer
+// queries give up at the ten-minute bound. A commitment waiting for
+// confirmation keeps waiting regardless of delivery age: elapsed wall time
+// cannot prove the transaction will never confirm.
 func TestIncomingVTXOPostponeHorizonPerCause(t *testing.T) {
 	t.Parallel()
 
@@ -899,21 +898,23 @@ func TestIncomingVTXOPostponeHorizonPerCause(t *testing.T) {
 			expired:   true,
 		},
 		{
-			// Past the indexer bound but inside the
-			// confirmation bound: the event is still
-			// confirming normally, so it must keep waiting.
+			// A slow block must not exhaust an indexer-sized bound.
 			name:      "unconfirmed past the indexer bound",
 			fetchErr:  unconfirmed,
 			age:       incomingVTXOPostponeHorizon + time.Minute,
 			wantCause: metrics.PostponeCauseChainUnconfirmed,
 		},
 		{
-			name:     "unconfirmed past the confirmation bound",
-			fetchErr: unconfirmed,
-			age: incomingVTXOConfirmationHorizon +
-				time.Minute,
+			name:      "unconfirmed for more than an hour",
+			fetchErr:  unconfirmed,
+			age:       time.Hour + time.Minute,
 			wantCause: metrics.PostponeCauseChainUnconfirmed,
-			expired:   true,
+		},
+		{
+			name:      "unconfirmed after extended downtime",
+			fetchErr:  unconfirmed,
+			age:       24 * time.Hour,
+			wantCause: metrics.PostponeCauseChainUnconfirmed,
 		},
 	}
 
@@ -953,6 +954,125 @@ func TestIncomingVTXOPostponeHorizonPerCause(t *testing.T) {
 
 			require.Empty(t, saver.saved)
 			require.Zero(t, exec.commits)
+		})
+	}
+}
+
+// TestIncomingVTXOConfirmationRecoversAfterLongWait verifies an old delivery
+// survives incomplete chain responses and materializes once its commitment
+// confirms, without a restart or manual redrive.
+func TestIncomingVTXOConfirmationRecoversAfterLongWait(t *testing.T) {
+	t.Parallel()
+
+	const confirmationHeight = 700
+	pkScript := []byte{0x51, 0x20, 0xbb, 0xdd}
+	candidate, commitment := expiryfixture.Round(
+		t, 50_000, pkScript, 300, confirmationHeight, 19,
+	)
+
+	tests := []struct {
+		name         string
+		confirmation CommitmentConfirmation
+		err          error
+	}{
+		{
+			name: "backend unavailable",
+			err:  errors.New("chain backend catching up"),
+		},
+		{
+			name: "missing transaction",
+			confirmation: CommitmentConfirmation{
+				BlockHeight: confirmationHeight,
+			},
+		},
+		{
+			name: "missing height",
+			confirmation: CommitmentConfirmation{
+				Tx: commitment,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			behavior, saver, sink := newPostponeTestBehavior(
+				t, pkScript, nil,
+			)
+			confirmed := false
+			resolve := func(context.Context, chainhash.Hash, []byte,
+				uint32) (CommitmentConfirmation, error) {
+
+				if !confirmed {
+					return test.confirmation, test.err
+				}
+
+				return CommitmentConfirmation{
+					Tx:          commitment,
+					BlockHeight: confirmationHeight,
+				}, nil
+			}
+			behavior.handler.cfg.AncestryFetcher = func(
+				ctx context.Context, outpoint wire.OutPoint,
+				script []byte, _ keychain.KeyDescriptor) (
+				IncomingVTXOExtras, error) {
+
+				query := newScriptedAncestryQuery(
+					testIncomingAncestryResponse(
+						nil, candidate,
+					),
+				)
+				extras, err := ResolveIncomingAncestry(
+					ctx, query.Query, outpoint, script, 128,
+					2,
+				)
+				if err != nil {
+					return extras, err
+				}
+				expiry, err := AuthenticateBatchExpiry(
+					ctx, extras.Ancestry, resolve,
+				)
+				extras.BatchExpiry = expiry
+
+				return extras, err
+			}
+
+			var txid chainhash.Hash
+			copy(txid[:], candidate.Outpoint.Txid)
+			msg := &IncomingVTXOMsg{Event: newTestEvent(
+				txid, candidate.Outpoint.Vout, pkScript, 50_000,
+				"round-long-confirmation",
+			)}
+			ctx := actor.WithDeliveryEnqueuedAtForTest(
+				t.Context(), time.Now().Add(-24*time.Hour),
+			)
+			exec := &recordingIncomingExec{}
+			cause := metrics.PostponeCauseChainUnconfirmed
+			for range 3 {
+				_, err := behavior.
+					Receive(ctx, msg, exec).
+					Unpack()
+				require.ErrorIs(t, err, actor.ErrPostponed)
+				require.ErrorIs(
+					t, err, ErrCommitmentUnconfirmed,
+				)
+				reported, ok := sink.AwaitMessage(time.Second)
+				require.True(t, ok)
+				require.Equal(t, &metrics.DeliveryPostponeMsg{
+					Cause: cause,
+				}, reported)
+			}
+			require.Empty(t, saver.saved)
+			require.Zero(t, exec.commits)
+
+			confirmed = true
+			_, err := behavior.Receive(ctx, msg, exec).Unpack()
+			require.NoError(t, err)
+			require.Len(t, saver.saved, 1)
+			require.Equal(
+				t, int32(1000), saver.saved[0].BatchExpiry,
+			)
+			require.Equal(t, 1, exec.commits)
 		})
 	}
 }

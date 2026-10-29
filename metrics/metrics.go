@@ -192,11 +192,9 @@ var (
 	// is waiting for, so a single delivery climbs once per redrive.
 	// Sustained growth is the honest picture of a retry loop on an external
 	// condition: it never shows up in an error counter and, unlike a nack,
-	// never climbs toward the dead-letter table. Each cause has its own
-	// behavior-owned horizon, and the horizons differ by cause - a wait on
-	// a not-yet-indexed outpoint is bounded in minutes, a wait on a Bitcoin
-	// confirmation is sized to block time - so a cause's rate says how many
-	// deliveries are waiting on it, not how close it is to failing.
+	// never climbs toward the dead-letter table. Indexer retries have a
+	// behavior-owned horizon, while confirmation waits have no wall-clock
+	// deadline. The rate reports retry decisions, not a pending-row count.
 	DeliveryPostponedTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
@@ -214,10 +212,8 @@ var (
 	// the signal that a retry loop ran out of patience. It is not a count
 	// of abandoned events: past the horizon every attempt of the ordinary
 	// Tell retry policy also increments it, so one abandoned delivery can
-	// count several times. Nor is the horizon one value: it is chosen per
-	// cause, so an indexer wait expires after minutes while a commitment
-	// confirmation gets an hour, which is why the `cause` label is the
-	// only way to read these series together.
+	// count several times. Confirmation waits have no wall-clock deadline
+	// and therefore never increment this counter.
 	DeliveryPostponeExpiredTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
