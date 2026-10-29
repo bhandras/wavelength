@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/lightninglabs/wavelength/arkrpc"
 	"github.com/lightninglabs/wavelength/baselib/actor"
+	"github.com/lightninglabs/wavelength/internal/expiryfixture"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -432,6 +433,88 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 	expiryCfg := DefaultExpiryConfig()
 	expiryCfg.MaxPaymentCLTV = 300
 	require.False(t, expiryCfg.CanReserveMaxPaymentCLTV(desc))
+}
+
+// TestIncomingVTXOHandlerInflatedCreatedHeight verifies indexer creation
+// metadata cannot disable monitoring of a chain-authenticated expiry.
+func TestIncomingVTXOHandlerInflatedCreatedHeight(t *testing.T) {
+	t.Parallel()
+
+	const (
+		confirmationHeight = 700
+		batchExpiry        = 1000
+		createdHeight      = batchExpiry + 1
+	)
+	_, clientKey := btcec.PrivKeyFromBytes([]byte{17, 1})
+	_, operatorKey := btcec.PrivKeyFromBytes([]byte{17, 2})
+	pkScript := []byte{0x51, 0x20, 0xaa, 0xbb}
+	candidate, commitment := expiryfixture.Round(
+		t, 50_000, pkScript, 300, confirmationHeight, 17,
+	)
+	candidate.CreatedHeight = createdHeight
+	lookup := &mockScriptLookup{scripts: map[string]*OwnedReceiveScript{
+		string(pkScript): {
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: clientKey,
+			},
+			OperatorPubKey: operatorKey,
+			ExitDelay:      10,
+		},
+	}}
+	saver := &mockVTXOSaver{}
+	query := newScriptedAncestryQuery(
+		testIncomingAncestryResponse(nil, candidate),
+	)
+	resolve := func(context.Context, chainhash.Hash, []byte, uint32) (
+		CommitmentConfirmation, error) {
+
+		return CommitmentConfirmation{
+			Tx:          commitment,
+			BlockHeight: confirmationHeight,
+		}, nil
+	}
+	handler := NewIncomingVTXOHandler(
+		IncomingVTXOHandlerConfig{
+			ScriptStore: lookup,
+			VTXOStore:   saver,
+			AncestryFetcher: func(ctx context.Context,
+				outpoint wire.OutPoint, script []byte,
+				_ keychain.KeyDescriptor) (IncomingVTXOExtras,
+				error) {
+
+				extras, err := ResolveIncomingAncestry(
+					ctx, query.Query, outpoint, script, 128,
+					2,
+				)
+				if err != nil {
+					return IncomingVTXOExtras{}, err
+				}
+				expiry, err := AuthenticateBatchExpiry(
+					ctx, extras.Ancestry, resolve,
+				)
+				extras.BatchExpiry = expiry
+
+				return extras, err
+			},
+		},
+	)
+	var txid chainhash.Hash
+	copy(txid[:], candidate.Outpoint.Txid)
+	_, err := handler.Receive(t.Context(), &IncomingVTXOMsg{
+		Event: newTestEvent(txid, 0, pkScript, 50_000, "round-height"),
+	}).Unpack()
+	require.NoError(t, err)
+	require.Len(t, saver.saved, 1)
+	desc := saver.saved[0]
+	require.EqualValues(t, createdHeight, desc.CreatedHeight)
+	require.EqualValues(t, batchExpiry, desc.BatchExpiry)
+	expiryCfg := DefaultExpiryConfig()
+	require.Equal(
+		t, ExpiryStatusNeedsRefresh, expiryCfg.CheckExpiry(desc, 900),
+	)
+	require.Equal(
+		t, ExpiryStatusCritical, expiryCfg.CheckExpiry(desc, 990),
+	)
 }
 
 // TestIncomingVTXOHandlerUnownedScript verifies that a VTXO_CREATED

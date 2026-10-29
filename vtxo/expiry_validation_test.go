@@ -2,15 +2,14 @@ package vtxo
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 // TestHasUsableBatchExpiry asserts which descriptors carry an expiry that an
-// expiry decision may be based on. Every rejected shape would otherwise be
-// read as a deadline that has already passed, because all expiry arithmetic
-// is `BatchExpiry - currentHeight`.
+// expiry decision may be based on, independently of creation metadata.
 func TestHasUsableBatchExpiry(t *testing.T) {
 	t.Parallel()
 
@@ -46,10 +45,16 @@ func TestHasUsableBatchExpiry(t *testing.T) {
 			expectUsable:  false,
 		},
 		{
-			name:          "expires before it was created",
+			name:          "creation metadata exceeds expiry",
 			batchExpiry:   50,
 			createdHeight: 100,
-			expectUsable:  false,
+			expectUsable:  true,
+		},
+		{
+			name:          "maximum creation height",
+			batchExpiry:   1000,
+			createdHeight: math.MaxInt32,
+			expectUsable:  true,
 		},
 		{
 			name:          "expires exactly at creation",
@@ -102,16 +107,6 @@ func TestCheckExpiryUnusableBatchExpiry(t *testing.T) {
 		require.NotEqual(t, ExpiryStatusExpired, status)
 	})
 
-	t.Run("expiry before creation is unknown", func(t *testing.T) {
-		t.Parallel()
-
-		desc := &Descriptor{BatchExpiry: 50, CreatedHeight: 100}
-
-		require.Equal(
-			t, ExpiryStatusUnknown, cfg.CheckExpiry(desc, 200),
-		)
-	})
-
 	t.Run("real expiry still reports expired", func(t *testing.T) {
 		t.Parallel()
 
@@ -124,6 +119,63 @@ func TestCheckExpiryUnusableBatchExpiry(t *testing.T) {
 			t, ExpiryStatusExpired, cfg.CheckExpiry(desc, 200),
 		)
 	})
+}
+
+// TestCheckExpiryIgnoresCreatedHeight verifies that indexer metadata cannot
+// suppress any expiry status.
+func TestCheckExpiryIgnoresCreatedHeight(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultExpiryConfig()
+	const batchExpiry = int32(1_000)
+
+	tests := []struct {
+		name   string
+		height int32
+		status ExpiryStatus
+	}{
+		{
+			name:   "safe",
+			height: 100,
+			status: ExpiryStatusSafe,
+		},
+		{
+			name:   "refresh",
+			height: batchExpiry - cfg.RefreshThresholdBlocks,
+			status: ExpiryStatusNeedsRefresh,
+		},
+		{
+			name:   "critical",
+			height: batchExpiry - cfg.CriticalThresholdBlocks,
+			status: ExpiryStatusCritical,
+		},
+		{
+			name:   "expired",
+			height: batchExpiry,
+			status: ExpiryStatusExpired,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, createdHeight := range []int32{
+				0, 100, batchExpiry, batchExpiry + 1,
+				math.MaxInt32,
+			} {
+				desc := &Descriptor{
+					BatchExpiry:   batchExpiry,
+					CreatedHeight: createdHeight,
+				}
+				require.Equal(
+					t, test.status,
+					cfg.CheckExpiry(desc, test.height),
+					"creation height %d", createdHeight,
+				)
+			}
+		})
+	}
 }
 
 // TestExpiryStatusUnknownString asserts the new status renders, so log lines

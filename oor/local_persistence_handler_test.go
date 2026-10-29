@@ -269,6 +269,33 @@ func TestLocalPersistenceOutboxHandlerAuthenticatesIncomingExpiry(
 func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	t.Parallel()
 
+	tests := []struct {
+		name          string
+		createdHeight int32
+	}{
+		{
+			name:          "honest creation height",
+			createdHeight: 700,
+		},
+		{
+			name:          "inflated creation height",
+			createdHeight: 1001,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			testMaterializeIncomingHeight(t, test.createdHeight)
+		})
+	}
+}
+
+// testMaterializeIncomingHeight verifies receive persistence and expiry
+// monitoring for both honest and inflated indexer creation metadata.
+func testMaterializeIncomingHeight(t *testing.T, createdHeight int32) {
+	t.Helper()
+
 	ctx := t.Context()
 
 	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
@@ -328,7 +355,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 				Ancestry: validTestIncomingAncestry(
 					parentCommitment,
 				),
-				CreatedHeight: 700,
+				CreatedHeight: createdHeight,
 			}, nil
 		},
 	}
@@ -360,7 +387,16 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Equal(t, parentCommitment, desc.CommitmentTxID)
 	require.EqualValues(t, 1000, desc.BatchExpiry)
 	require.EqualValues(t, 1, desc.MaxTreeDepth())
-	require.EqualValues(t, 700, desc.CreatedHeight)
+	require.EqualValues(t, createdHeight, desc.CreatedHeight)
+
+	expiryCfg := vtxo.DefaultExpiryConfig()
+	require.Equal(
+		t, vtxo.ExpiryStatusNeedsRefresh,
+		expiryCfg.CheckExpiry(desc, 900),
+	)
+	require.Equal(
+		t, vtxo.ExpiryStatusCritical, expiryCfg.CheckExpiry(desc, 990),
+	)
 
 	// Re-materialization should be idempotent.
 	events, err = handler.Handle(ctx, sessionID, req)
