@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btcd/psbt/v2"
@@ -258,7 +259,12 @@ func recoveryDescriptor(job vhtlcrecovery.RecoveryJob,
 	if err != nil {
 		return nil, err
 	}
-	if meta.OperatorKey == nil || !operator.IsEqual(meta.OperatorKey) {
+	// Taproot commits to x-only keys. Stored round metadata may normalize
+	// the key's parity while the recovery tuple retains its original key.
+	if meta.OperatorKey == nil || !bytes.Equal(
+		schnorr.SerializePubKey(operator),
+		schnorr.SerializePubKey(meta.OperatorKey),
+	) {
 		return nil, fmt.Errorf("recovery operator key mismatch")
 	}
 	template, err := recoveryPolicyTemplate(job, meta.PkScript)

@@ -288,3 +288,23 @@ func TestFetchIndexedRecoveryTargetUsesPolicy(t *testing.T) {
 	// so the operator can check the signer is a settlement participant.
 	require.Contains(t, string(proof.GetMessage()), string(template))
 }
+
+// TestRecoveryDescriptorAcceptsOperatorParity preserves Taproot's x-only
+// identity when round metadata and the recovery tuple use opposite parities.
+func TestRecoveryDescriptorAcceptsOperatorParity(t *testing.T) {
+	t.Parallel()
+	job, candidate := indexedRecoveryFixture(t)
+	m := newIndexedRecoveryMaterializer(t, candidate)
+	require.NoError(t, m.EnsureRecoveryTarget(t.Context(), job))
+	meta, err := m.vtxos.GetVTXO(t.Context(), job.VTXOOutpoint)
+	require.NoError(t, err)
+	job.ServerPubkey[0] ^= 1
+	desc, err := recoveryDescriptor(job, meta)
+	require.NoError(t, err)
+	require.Equal(t, meta.PolicyTemplate, desc.PolicyTemplate)
+
+	_, different := btcec.PrivKeyFromBytes([]byte{77})
+	meta.OperatorKey = different
+	_, err = recoveryDescriptor(job, meta)
+	require.ErrorContains(t, err, "operator key mismatch")
+}
