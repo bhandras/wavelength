@@ -576,7 +576,9 @@ func (s *paySession) transition(event payEvent) error {
 func (s *paySession) createSwap(ctx context.Context) error {
 	clientKey, err := s.client.daemon.IdentityPubKey(ctx)
 	if err != nil {
-		return fmt.Errorf("get client pubkey: %w", err)
+		return newRetryableActionError(
+			fmt.Errorf("get client pubkey: %w", err),
+		)
 	}
 
 	var cfg *InSwapConfig
@@ -648,7 +650,9 @@ func (s *paySession) createSwap(ctx context.Context) error {
 
 	operatorKey, err := s.client.daemon.OperatorPubKey(ctx)
 	if err != nil {
-		return fmt.Errorf("get operator pubkey: %w", err)
+		return newRetryableActionError(
+			fmt.Errorf("get operator pubkey: %w", err),
+		)
 	}
 
 	// The LN payment hash is already SHA256(preimage), which is the value
@@ -719,7 +723,12 @@ func (s *paySession) ensureFundingStillSafe(ctx context.Context) error {
 
 	height, err := s.client.daemon.BlockHeight(ctx)
 	if err != nil {
-		return fmt.Errorf("get block height: %w", err)
+
+		// A failed height lookup is not chain state. Refuse nothing and
+		// retry the admission decision once a height is readable.
+		return newRetryableActionError(
+			fmt.Errorf("get block height: %w", err),
+		)
 	}
 
 	if height+s.client.refundLocktimeBuffer >=
@@ -1392,9 +1401,17 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 
 		height, err := s.client.daemon.BlockHeight(ctx)
 		if err != nil {
-			return fmt.Errorf("get block height: %w", err)
-		}
-		if height >= s.cfg.VHTLCConfig.RefundLocktime {
+
+			// Without chain state, defer only the height
+			// comparison. The wall-clock deadline below must still
+			// initiate a refund for this funded swap instead of
+			// expiring it.
+			s.client.log.DebugS(
+				ctx,
+				"Block height unavailable; retrying",
+				slog.String("err", err.Error()),
+			)
+		} else if height >= s.cfg.VHTLCConfig.RefundLocktime {
 			return s.initiateRefund(
 				ctx, "refund locktime reached before claim",
 			)
@@ -1486,7 +1503,13 @@ func (s *paySession) completeRefund(ctx context.Context) error {
 
 	height, err := s.client.daemon.BlockHeight(ctx)
 	if err != nil {
-		return fmt.Errorf("get block height: %w", err)
+
+		// The refund locktime is an absolute height, so maturity
+		// cannot be decided without one. Retry with the refund
+		// still pending.
+		return newRetryableActionError(
+			fmt.Errorf("get block height: %w", err),
+		)
 	}
 	if height < s.cfg.VHTLCConfig.RefundLocktime {
 		wait := s.refundLocktimePollInterval(height)
@@ -2060,7 +2083,13 @@ func (s *paySession) observeLiveVHTLC(ctx context.Context) (bool, error) {
 
 	height, err := s.client.daemon.BlockHeight(ctx)
 	if err != nil {
-		return false, fmt.Errorf("get block height: %w", err)
+
+		// The maturity check needs chain state, so an unavailable
+		// height says nothing about the funded vHTLC and stays
+		// retryable.
+		return false, newRetryableActionError(
+			fmt.Errorf("get block height: %w", err),
+		)
 	}
 	if height+s.client.refundLocktimeBuffer >=
 		s.cfg.VHTLCConfig.RefundLocktime {
