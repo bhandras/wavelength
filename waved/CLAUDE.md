@@ -273,6 +273,13 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   fraud spends drive exits through the VTXO manager — the same admission path
   as manual, critical-expiry, and vHTLC recovery exits — rather than talking to
   the unroll registry directly.
+- A vHTLC recovery target funded by another wallet is fetched with an
+  exact-policy indexer proof signed by the local recovery key. Before storing
+  foreign packages, the materializer validates the signed path to the exact
+  outpoint, amount, and script, and authenticates expiry against local chain
+  confirmations. Complete recovery descriptors and signed packages are reused
+  locally after restart; foreign inputs never enter coin selection. The first
+  remote materialization has a bounded, caller-owned context.
 - The vHTLC recovery service is wired with an `Exiter: managerExitAdmitter`, a
   `ForceExit` seam that `Ask`s the VTXO manager to force a materialized
   recovery target into unilateral exit. The target materializer

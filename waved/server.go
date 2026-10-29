@@ -6096,17 +6096,21 @@ func (s *Server) initUnrollSubsystem(ctx context.Context,
 		return fmt.Errorf("VTXO manager not initialized for vhtlc " +
 			"recovery")
 	}
+	materializer := newVHTLCRecoveryTargetMaterializer(
+		vtxoStore, oorStore, s.subLogger(VHTLCRecoverySubsystem),
+	)
+	materializer.fetchTarget = s.fetchIndexedRecoveryTarget
+	materializer.authenticateExpiry = s.expiryAuthenticator
 	recoverySvc, err := coordinator.NewService(coordinator.ServiceConfig{
 		Store:  recoveryStore,
 		Unroll: coordinator.NewActorUnrollRegistry(registry.Ref()),
 		Exiter: managerExitAdmitter{
 			mgr: s.vtxoMgrRef.UnsafeFromSome(),
 		},
-		Log: fn.Some(s.subLogger(VHTLCRecoverySubsystem)),
-		TargetMaterializer: newVHTLCRecoveryTargetMaterializer(
-			vtxoStore, oorStore,
+		Log: fn.Some(
 			s.subLogger(VHTLCRecoverySubsystem),
 		),
+		TargetMaterializer: materializer,
 	})
 	if err != nil {
 		return err
