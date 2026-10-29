@@ -81,6 +81,11 @@ func (m *IncomingVTXOMsg) MessageType() string {
 const (
 	incomingVTXOMsgTLVType   tlv.Type = 0
 	incomingVTXORedriveDelay          = 30 * time.Second
+
+	// incomingVTXOPostponeHorizon bounds indexer and persistence retries by
+	// the durable row's enqueue age. Confirmation waits have no time limit:
+	// elapsed wall time cannot prove a commitment will never confirm.
+	incomingVTXOPostponeHorizon = 10 * time.Minute
 )
 
 // TLVType returns the durable-mailbox type identifier for an incoming event.
@@ -423,8 +428,8 @@ func (h *IncomingVTXOHandler) prepare(ctx context.Context,
 		ctx, outpoint, pkScript, rec.ClientKey,
 	)
 	if err != nil {
-		h.log.WarnS(ctx, "Failed to authenticate incoming VTXO expiry",
-			err,
+		h.log.DebugS(ctx, "Failed to authenticate incoming VTXO expiry",
+			slog.Any("error", err),
 			slog.String("outpoint", outpoint.String()),
 		)
 		if errors.Is(err, ErrInvalidBatchExpiryEvidence) {
@@ -585,8 +590,70 @@ func (h *IncomingVTXOHandler) Receive(ctx context.Context,
 // delivery-store writer transaction. Persistence and manager notification are
 // replay-safe, then one short Commit consumes the durable event. Transient
 // failures are postponed without spending the mailbox attempt budget.
+// Indexer and persistence retries are bounded by enqueue age; confirmation
+// waits remain pending until the chain source can authenticate the commitment.
 type incomingVTXODurableBehavior struct {
 	handler *IncomingVTXOHandler
+}
+
+// postponeRetry postpones a retryable incoming-event failure. Indexer and
+// persistence failures enter the ordinary retry path after ten minutes from
+// enqueue, then dead-letter if they persist. A missing enqueue timestamp leaves
+// the delivery pending because its age is unknown.
+//
+// Confirmation waits have no wall-clock deadline. A slow block or a chain
+// backend catching up after downtime cannot prove an owned VTXO is invalid, and
+// a dead-lettered event has no automatic redrive. Keep waiting and reporting
+// the cause so the receive can materialize once confirmation becomes available.
+func (b *incomingVTXODurableBehavior) postponeRetry(ctx context.Context,
+	err error, cause string) error {
+
+	horizon := incomingVTXOPostponeHorizon
+	enqueuedAt, ok := actor.DeliveryEnqueuedAt(ctx)
+	if cause != metrics.PostponeCauseChainUnconfirmed && ok &&
+		time.Since(enqueuedAt) >= horizon {
+
+		b.handler.log.WarnS(ctx, "Incoming VTXO delivery exceeded its "+
+			"postpone horizon; failing it to the ordinary retry "+
+			"path", err,
+			slog.String("cause", cause),
+			slog.Time("enqueued_at", enqueuedAt),
+			slog.Duration("horizon", horizon),
+		)
+		metrics.EmitDeliveryPostpone(
+			ctx, b.handler.cfg.MetricsSink, b.handler.log, cause,
+			true,
+		)
+
+		return err
+	}
+
+	metrics.EmitDeliveryPostpone(
+		ctx, b.handler.cfg.MetricsSink, b.handler.log, cause, false,
+	)
+
+	return fmt.Errorf("%w: %w", err,
+		actor.Postpone(incomingVTXORedriveDelay))
+}
+
+// incomingPostponeCause buckets a retryable incoming-event failure into the
+// coarse cause reported with the postpone metric. The bucket comes from
+// sentinels the ancestry lookup returns, never from the pushed event, so no
+// event-supplied value becomes a label.
+func incomingPostponeCause(err error) string {
+	switch {
+	case errors.Is(err, ErrIncomingAncestryNotFound):
+		return metrics.PostponeCauseMissing
+
+	case errors.Is(err, ErrCommitmentUnconfirmed):
+		return metrics.PostponeCauseChainUnconfirmed
+
+	case errors.Is(err, ErrIncomingAncestryIndexer):
+		return metrics.PostponeCauseIndexerError
+
+	default:
+		return metrics.PostponeCauseOther
+	}
 }
 
 // Receive validates and materializes an incoming event. Retriable failures
@@ -602,9 +669,8 @@ func (b *incomingVTXODurableBehavior) Receive(ctx context.Context,
 		}
 
 		return fn.Err[IncomingVTXOResp](
-			fmt.Errorf(
-				"%w: %w", err,
-				actor.Postpone(incomingVTXORedriveDelay),
+			b.postponeRetry(
+				ctx, err, incomingPostponeCause(err),
 			),
 		)
 	}
@@ -619,10 +685,11 @@ func (b *incomingVTXODurableBehavior) Receive(ctx context.Context,
 				err,
 				slog.String("outpoint", desc.Outpoint.String()),
 			)
-			postpone := actor.Postpone(incomingVTXORedriveDelay)
 
 			return fn.Err[IncomingVTXOResp](
-				fmt.Errorf("%w: %w", err, postpone),
+				b.postponeRetry(
+					ctx, err, metrics.PostponeCauseOther,
+				),
 			)
 		}
 
@@ -643,10 +710,7 @@ func (b *incomingVTXODurableBehavior) Receive(ctx context.Context,
 		)
 
 		return fn.Err[IncomingVTXOResp](
-			fmt.Errorf(
-				"%w: %w", err,
-				actor.Postpone(incomingVTXORedriveDelay),
-			),
+			b.postponeRetry(ctx, err, metrics.PostponeCauseOther),
 		)
 	}
 
@@ -676,15 +740,19 @@ func NewIncomingVTXODurableActor(cfg IncomingVTXOHandlerConfig,
 		store, NewIncomingVTXOCodec(),
 	)
 	durableCfg.Log = cfg.Log
-	durableCfg.TellRetryPolicy = func(err error, attempts int) (bool,
-		time.Duration) {
 
-		if errors.Is(err, ErrInvalidBatchExpiryEvidence) {
-			return false, 0
-		}
+	// A policy that declines to retry is the dead-letter decision, so
+	// counting from the policy makes an incoming event that ran out of
+	// patience visible without reading logs.
+	durableCfg.TellRetryPolicy = metrics.WithDeadLetterCounter(
+		func(err error, attempts int) (bool, time.Duration) {
+			if errors.Is(err, ErrInvalidBatchExpiryEvidence) {
+				return false, 0
+			}
 
-		return actor.DefaultTellRetryPolicy(err, attempts)
-	}
+			return actor.DefaultTellRetryPolicy(err, attempts)
+		}, cfg.MetricsSink, metrics.ActorFamilyIncomingVTXO,
+	)
 
 	return actor.NewDurableActor(durableCfg).Unpack()
 }
