@@ -712,10 +712,10 @@ func (s *ReceiveSession) maybeEscalateReceiveClaimRecovery(ctx context.Context,
 	reason := fmt.Sprintf("cooperative claim failed: %v", cause)
 	height, err := s.client.daemon.BlockHeight(ctx)
 	if err != nil {
-		s.client.log.WarnS(
+		s.client.log.DebugS(
 			ctx,
 			"Receive claim recovery height unavailable",
-			err,
+			slog.Any("err", err),
 			btclog.Hex("hash", s.PaymentHash[:]),
 			slog.String("recovery_id", s.claimRecoveryID),
 		)
@@ -734,8 +734,9 @@ func (s *ReceiveSession) maybeEscalateReceiveClaimRecovery(ctx context.Context,
 		s.client.now(), height, deadlineHeight,
 	)
 	if !decision.Escalate {
-		s.client.log.WarnS(ctx,
-			"Receive claim recovery escalation deferred", cause,
+		s.client.log.DebugS(ctx,
+			"Receive claim recovery escalation deferred",
+			slog.Any("err", cause),
 			btclog.Hex("hash", s.PaymentHash[:]),
 			slog.String("recovery_id", s.claimRecoveryID),
 			slog.String("reason", reason),

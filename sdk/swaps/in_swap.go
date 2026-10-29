@@ -576,7 +576,9 @@ func (s *paySession) transition(event payEvent) error {
 func (s *paySession) createSwap(ctx context.Context) error {
 	clientKey, err := s.client.daemon.IdentityPubKey(ctx)
 	if err != nil {
-		return fmt.Errorf("get client pubkey: %w", err)
+		return newRetryableActionError(
+			fmt.Errorf("get client pubkey: %w", err),
+		)
 	}
 
 	var cfg *InSwapConfig
@@ -648,7 +650,9 @@ func (s *paySession) createSwap(ctx context.Context) error {
 
 	operatorKey, err := s.client.daemon.OperatorPubKey(ctx)
 	if err != nil {
-		return fmt.Errorf("get operator pubkey: %w", err)
+		return newRetryableActionError(
+			fmt.Errorf("get operator pubkey: %w", err),
+		)
 	}
 
 	// The LN payment hash is already SHA256(preimage), which is the value
@@ -1398,21 +1402,16 @@ func (s *paySession) waitForClaimPreimage(ctx context.Context) error {
 		height, err := s.client.daemon.BlockHeight(ctx)
 		if err != nil {
 
-			// A failed height lookup is not chain state. Keep
-			// polling on a readable height instead of exiting
-			// the wait on a funded vHTLC.
+			// Without chain state, defer only the height
+			// comparison. The wall-clock deadline below must still
+			// initiate a refund for this funded swap instead of
+			// expiring it.
 			s.client.log.DebugS(
 				ctx,
 				"Block height unavailable; retrying",
 				slog.String("err", err.Error()),
 			)
-			if err := s.waitForNextPoll(ctx); err != nil {
-				return err
-			}
-
-			continue
-		}
-		if height >= s.cfg.VHTLCConfig.RefundLocktime {
+		} else if height >= s.cfg.VHTLCConfig.RefundLocktime {
 			return s.initiateRefund(
 				ctx, "refund locktime reached before claim",
 			)

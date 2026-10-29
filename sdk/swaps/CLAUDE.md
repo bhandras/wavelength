@@ -193,6 +193,9 @@ result into an `IncomingVHTLCNotification`.
 - **A failed block-height lookup is never chain state.** Every height-dependent
   timing check either retries (`newRetryableActionError`) or defers its
   absolute deadline, never proceeding on a substituted or zero height.
+  Claim monitoring still applies its wall-clock deadline and persists refund
+  intent when that deadline expires. GetInfo-backed identity and operator-key
+  lookup failures during pay and receive setup also remain retryable.
 - `PaySession` / `ReceiveSession` are NOT goroutine-safe; `Wait`,
   `Claim`, `WaitForFunding`, and `State` must not be called
   concurrently.

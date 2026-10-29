@@ -2463,6 +2463,8 @@ type testSendPolicyHook func(call int, idempotencyKey string) (
 type testDaemonConn struct {
 	identityKey       *btcec.PublicKey
 	operatorKey       *btcec.PublicKey
+	identityKeyErr    error
+	operatorKeyErr    error
 	blockHeight       uint32
 	blockHeightErr    error
 	liveVTXOs         []VTXOInfo
@@ -2808,7 +2810,7 @@ func (d *testDaemonConn) PrepareOORWithCustomInputs(_ context.Context,
 func (d *testDaemonConn) IdentityPubKey(context.Context) (*btcec.PublicKey,
 	error) {
 
-	return d.identityKey, nil
+	return d.identityKey, d.identityKeyErr
 }
 
 // SignOutSwapHTLCAck signs accepted terms with a deterministic test key.
@@ -2837,7 +2839,7 @@ func (d *testDaemonConn) SignOutSwapHTLCAck(_ context.Context,
 func (d *testDaemonConn) OperatorPubKey(context.Context) (*btcec.PublicKey,
 	error) {
 
-	return d.operatorKey, nil
+	return d.operatorKey, d.operatorKeyErr
 }
 
 // receiveAuthPrivKey derives the configured deterministic receive-auth key.

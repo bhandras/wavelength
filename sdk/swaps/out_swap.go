@@ -638,12 +638,16 @@ func (s *ReceiveSession) prepareInvoice(ctx context.Context) error {
 
 	clientKey, err := s.client.daemon.IdentityPubKey(ctx)
 	if err != nil {
-		return fmt.Errorf("get client pubkey: %w", err)
+		return newRetryableActionError(
+			fmt.Errorf("get client pubkey: %w", err),
+		)
 	}
 
 	operatorKey, err := s.client.daemon.OperatorPubKey(ctx)
 	if err != nil {
-		return fmt.Errorf("get operator pubkey: %w", err)
+		return newRetryableActionError(
+			fmt.Errorf("get operator pubkey: %w", err),
+		)
 	}
 
 	preimage, err := NewPreimage()
