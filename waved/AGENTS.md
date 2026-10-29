@@ -463,6 +463,10 @@ For field-level detail, use `go doc github.com/lightninglabs/wavelength/waved.<S
   so the bound survives restarts.
 - `operatorTermsFromResponse` and daemon `GetInfo` must preserve
   `FreeRefreshWindowBlocks` end to end.
+- `GetInfo` returns `Unavailable` when the active wallet's best-block lookup
+  fails, preserving the cause for in-process callers. A successful height zero
+  remains valid. GetInfo-backed key reads inherit this availability boundary;
+  SDK swap setup must keep those failures retryable.
 - `RPCServer.OperatorVTXOFloor` refreshes authenticated operator terms for
   each credit materialization decision and bounds that refresh with
   `operatorTermsRefreshTimeout` (30 s). Its callers use daemon/actor lifetime

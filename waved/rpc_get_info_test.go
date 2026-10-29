@@ -5,13 +5,19 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/wavelength/btcwbackend"
 	"github.com/lightninglabs/wavelength/chainsource"
+	"github.com/lightninglabs/wavelength/lwwallet"
 	"github.com/lightninglabs/wavelength/waverpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // heightChainBackend is a minimal chain backend that only answers best-block
@@ -30,12 +36,30 @@ func (b *heightChainBackend) BestBlock(context.Context) (int32, chainhash.Hash,
 	return b.height, chainhash.Hash{}, b.err
 }
 
+// heightChainKit answers best-block queries through the lnd wallet arm.
+type heightChainKit struct {
+	lndclient.ChainKitClient
+
+	height int32
+	err    error
+}
+
+// GetBestBlock returns the scripted lnd height or lookup failure.
+func (b *heightChainKit) GetBestBlock(context.Context) (chainhash.Hash, int32,
+	error) {
+
+	return chainhash.Hash{}, b.height, b.err
+}
+
 // TestGetInfoBestBlockHeightRequiresLookup verifies GetInfo reports the best
 // block height from the active local wallet backend and fails the call when
 // that lookup fails, rather than returning a zero height that callers would
 // read as chain state. A backend that does answer with genesis still succeeds.
 func TestGetInfoBestBlockHeightRequiresLookup(t *testing.T) {
-	wallet := newFundedLwWallet(t)
+	t.Parallel()
+
+	identityKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 	lookupErr := errors.New("chain backend unavailable")
 
 	tests := []struct {
@@ -44,6 +68,11 @@ func TestGetInfoBestBlockHeightRequiresLookup(t *testing.T) {
 		height     int32
 		lookupErr  error
 	}{
+		{
+			name:       "lnd lookup failure",
+			walletType: WalletTypeLnd,
+			lookupErr:  lookupErr,
+		},
 		{
 			name:       "lwwallet lookup failure",
 			walletType: WalletTypeLwwallet,
@@ -55,9 +84,27 @@ func TestGetInfoBestBlockHeightRequiresLookup(t *testing.T) {
 			lookupErr:  lookupErr,
 		},
 		{
+			name:       "lnd genesis height",
+			walletType: WalletTypeLnd,
+		},
+		{
 			name:       "lwwallet genesis height",
 			walletType: WalletTypeLwwallet,
 			height:     0,
+		},
+		{
+			name:       "btcwallet genesis height",
+			walletType: WalletTypeBtcwallet,
+		},
+		{
+			name:       "lnd tip height",
+			walletType: WalletTypeLnd,
+			height:     812_345,
+		},
+		{
+			name:       "lwwallet tip height",
+			walletType: WalletTypeLwwallet,
+			height:     812_345,
 		},
 		{
 			name:       "btcwallet tip height",
@@ -80,13 +127,28 @@ func TestGetInfoBestBlockHeightRequiresLookup(t *testing.T) {
 				},
 				log: btclog.Disabled,
 			}
-			if tc.walletType == WalletTypeLwwallet {
-				server.lwWallet = fn.Some(wallet)
-			} else {
-				server.btcwWallet = fn.Some(
-					&btcwbackend.Wallet{
-						Wallet: wallet.Wallet,
+
+			// GetInfo uses the stable identity descriptor after
+			// startup; height reads need no real wallet database in
+			// this test.
+			server.storeClientKeyDesc(keychain.KeyDescriptor{
+				PubKey: identityKey.PubKey(),
+			})
+			switch tc.walletType {
+			case WalletTypeLnd:
+				server.lnd = fn.Some(&lndclient.GrpcLndServices{
+					ChainKit: &heightChainKit{
+						height: tc.height,
+						err:    tc.lookupErr,
 					},
+				})
+
+			case WalletTypeLwwallet:
+				server.lwWallet = fn.Some(&lwwallet.Wallet{})
+
+			case WalletTypeBtcwallet:
+				server.btcwWallet = fn.Some(
+					&btcwbackend.Wallet{},
 				)
 			}
 
@@ -95,6 +157,9 @@ func TestGetInfoBestBlockHeightRequiresLookup(t *testing.T) {
 			)
 			if tc.lookupErr != nil {
 				require.ErrorIs(t, err, tc.lookupErr)
+				require.Equal(
+					t, codes.Unavailable, status.Code(err),
+				)
 				require.Nil(t, resp)
 
 				return

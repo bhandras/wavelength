@@ -632,14 +632,17 @@ type unavailableError struct {
 	err error
 }
 
+// Error returns the wrapped lookup failure.
 func (e unavailableError) Error() string {
 	return e.err.Error()
 }
 
+// Unwrap preserves the original cause for in-process callers.
 func (e unavailableError) Unwrap() error {
 	return e.err
 }
 
+// GRPCStatus classifies the backend failure for remote callers.
 func (e unavailableError) GRPCStatus() *status.Status {
 	return status.New(codes.Unavailable, e.err.Error())
 }
@@ -762,8 +765,8 @@ func (r *RPCServer) GetInfo(ctx context.Context, _ *waverpc.GetInfoRequest) (
 	)
 
 	if heightErr != nil {
-		r.server.log.WarnS(ctx, "Unable to fetch block height",
-			heightErr,
+		r.server.log.DebugS(ctx, "Unable to fetch block height",
+			slog.Any("err", heightErr),
 		)
 
 		return nil, unavailableError{err: heightErr}
