@@ -58,14 +58,19 @@ func (s ExpiryStatus) String() string {
 }
 
 // HasUsableBatchExpiry reports whether the descriptor carries a positive batch
-// expiry. Receive paths authenticate this deadline against confirmed ancestry.
+// expiry consistent with its creation metadata. This is a consistency check,
+// not authentication: legacy persisted deadlines may predate chain validation.
 //
-// Missing or nonpositive deadlines cannot drive expiry decisions. CreatedHeight
-// is historical metadata supplied by the indexer on receive paths; it must not
-// invalidate an independently authenticated expiry or disable monitoring for
-// existing persisted VTXOs.
+// New receive paths reject inconsistent metadata before persistence. Retain
+// this guard for existing rows so an inconsistent legacy deadline cannot
+// trigger an exit or expire a live coin. A zero creation height is permitted
+// for recovery compatibility.
 func HasUsableBatchExpiry(vtxo *Descriptor) bool {
-	return vtxo != nil && vtxo.BatchExpiry > 0
+	if vtxo == nil || vtxo.BatchExpiry <= 0 {
+		return false
+	}
+
+	return vtxo.CreatedHeight <= 0 || vtxo.CreatedHeight <= vtxo.BatchExpiry
 }
 
 // ExpiryConfig holds configurable thresholds for VTXO expiry monitoring. These

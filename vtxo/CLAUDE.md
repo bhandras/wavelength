@@ -178,6 +178,10 @@ when the local wallet owns the receive script.
   the sweep leaf, recomputes the tree-root output script, byte-matches that
   output in a locally confirmed commitment transaction, and derives the
   earliest `confirmation height + sweep delay` across ancestry fragments.
+  Creation heights above that authenticated deadline are rejected before
+  persistence; zero remains permitted for recovery. Legacy persisted rows
+  retain the expiry/creation consistency guard because they carry no durable
+  authentication marker. This path does not repair those rows.
   Lookup or save failures leave the durable event pending for retry. Existing
   persisted rows are not rewritten by this path.
 

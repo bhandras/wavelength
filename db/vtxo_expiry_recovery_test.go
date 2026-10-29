@@ -1,32 +1,32 @@
 package db
 
 import (
-	"math"
 	"testing"
 
 	"github.com/lightninglabs/wavelength/vtxo"
 	"github.com/stretchr/testify/require"
 )
 
-// TestRecoveredVTXOExpiryIgnoresCreatedHeight verifies existing wallet rows
-// with overstated creation metadata still enter unilateral exit when their
-// authenticated batch deadline becomes critical.
-func TestRecoveredVTXOExpiryIgnoresCreatedHeight(t *testing.T) {
+// TestRecoveredVTXOHoldsInconsistentLegacyExpiry verifies an inconsistent
+// legacy deadline cannot trigger an exit or expire a live coin after upgrade.
+func TestRecoveredVTXOHoldsInconsistentLegacyExpiry(t *testing.T) {
 	t.Parallel()
 
 	store, _, _ := newVTXOStoreForTest(t)
 	desc := createTestVTXODescriptor(
 		t, testRoundIDDB("expiry-recovery"), 0,
 	)
-	desc.CreatedHeight = math.MaxInt32
+	desc.CreatedHeight = 700
+	desc.BatchExpiry = 600
 	require.NoError(t, store.SaveVTXO(t.Context(), desc))
 
 	// Recover through the same store listing used at daemon startup. The
-	// fix must protect old rows without rewriting their historical fields.
+	// legacy deadline has no durable authentication marker, so its positive
+	// value alone cannot override the existing consistency guard.
 	recovered, err := store.ListRecoverableVTXOs(t.Context())
 	require.NoError(t, err)
 	require.Len(t, recovered, 1)
-	require.Equal(t, int32(math.MaxInt32), recovered[0].CreatedHeight)
+	require.Equal(t, desc.CreatedHeight, recovered[0].CreatedHeight)
 
 	cfg := vtxo.DefaultExpiryConfig()
 	child := vtxo.NewVTXOActor(t.Context(), &vtxo.VTXOActorConfig{
@@ -37,27 +37,26 @@ func TestRecoveredVTXOExpiryIgnoresCreatedHeight(t *testing.T) {
 	require.IsType(t, &vtxo.LiveState{}, child.CurrentState())
 
 	criticalBlocks := cfg.CalculateCriticalThreshold(recovered[0])
-	response, err := child.Receive(t.Context(), &vtxo.BlockEpochEvent{
-		Height: recovered[0].BatchExpiry - criticalBlocks,
-	}).Unpack()
-	require.NoError(t, err)
-	require.IsType(t, &vtxo.UnilateralExitState{}, child.CurrentState())
+	for _, height := range []int32{
+		desc.BatchExpiry - criticalBlocks, desc.BatchExpiry,
+	} {
+		event := &vtxo.BlockEpochEvent{Height: height}
+		response, err := child.Receive(t.Context(), event).Unpack()
+		require.NoError(t, err)
+		require.IsType(t, &vtxo.LiveState{}, child.CurrentState())
 
-	result, ok := response.(vtxo.VTXOActorResponse)
-	require.True(t, ok)
-	var notifications []*vtxo.ExpiringNotification
-	for _, message := range result.Outbox {
-		notification, ok := message.(*vtxo.ExpiringNotification)
-		if ok {
-			notifications = append(notifications, notification)
-		}
+		result, ok := response.(vtxo.VTXOActorResponse)
+		require.True(t, ok)
+		require.Empty(t, result.Outbox)
 	}
-	require.Len(t, notifications, 1)
-	require.Equal(t, desc.Outpoint, notifications[0].VTXO.Outpoint)
-	require.Equal(t, criticalBlocks, notifications[0].BlocksRemaining)
 
 	stored, err := store.GetVTXO(t.Context(), desc.Outpoint)
 	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusUnilateralExit, stored.Status)
+	require.Equal(t, vtxo.VTXOStatusLive, stored.Status)
+	require.Equal(t, desc.BatchExpiry, stored.BatchExpiry)
+	require.Equal(
+		t, vtxo.ExpiryStatusUnknown,
+		cfg.CheckExpiry(stored, stored.BatchExpiry),
+	)
 	require.Equal(t, desc.CreatedHeight, stored.CreatedHeight)
 }

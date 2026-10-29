@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -435,15 +436,28 @@ func TestIncomingVTXOHandlerOwnedScript(t *testing.T) {
 	require.False(t, expiryCfg.CanReserveMaxPaymentCLTV(desc))
 }
 
-// TestIncomingVTXOHandlerInflatedCreatedHeight verifies indexer creation
-// metadata cannot disable monitoring of a chain-authenticated expiry.
-func TestIncomingVTXOHandlerInflatedCreatedHeight(t *testing.T) {
+// TestIncomingVTXOHandlerValidatesCreatedHeight verifies incoming metadata
+// cannot persist a new coin with expiry monitoring disabled.
+func TestIncomingVTXOHandlerValidatesCreatedHeight(t *testing.T) {
 	t.Parallel()
+
+	for _, height := range []int32{0, 700, 1000, 1001, math.MaxInt32} {
+		t.Run(fmt.Sprintf("height %d", height), func(t *testing.T) {
+			t.Parallel()
+
+			testIncomingVTXOCreationHeight(t, height)
+		})
+	}
+}
+
+// testIncomingVTXOCreationHeight checks acceptance against the authenticated
+// deadline rather than the indexer-advertised expiry.
+func testIncomingVTXOCreationHeight(t *testing.T, createdHeight int32) {
+	t.Helper()
 
 	const (
 		confirmationHeight = 700
 		batchExpiry        = 1000
-		createdHeight      = batchExpiry + 1
 	)
 	_, clientKey := btcec.PrivKeyFromBytes([]byte{17, 1})
 	_, operatorKey := btcec.PrivKeyFromBytes([]byte{17, 2})
@@ -503,6 +517,13 @@ func TestIncomingVTXOHandlerInflatedCreatedHeight(t *testing.T) {
 	_, err := handler.Receive(t.Context(), &IncomingVTXOMsg{
 		Event: newTestEvent(txid, 0, pkScript, 50_000, "round-height"),
 	}).Unpack()
+	if createdHeight > batchExpiry {
+		require.ErrorIs(t, err, ErrInvalidBatchExpiryEvidence)
+		require.Empty(t, saver.saved)
+
+		return
+	}
+
 	require.NoError(t, err)
 	require.Len(t, saver.saved, 1)
 	desc := saver.saved[0]

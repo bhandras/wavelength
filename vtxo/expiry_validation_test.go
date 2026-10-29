@@ -9,7 +9,8 @@ import (
 )
 
 // TestHasUsableBatchExpiry asserts which descriptors carry an expiry that an
-// expiry decision may be based on, independently of creation metadata.
+// expiry decision may be based on while preserving the legacy consistency
+// guard for deadlines written before chain authentication was introduced.
 func TestHasUsableBatchExpiry(t *testing.T) {
 	t.Parallel()
 
@@ -48,13 +49,13 @@ func TestHasUsableBatchExpiry(t *testing.T) {
 			name:          "creation metadata exceeds expiry",
 			batchExpiry:   50,
 			createdHeight: 100,
-			expectUsable:  true,
+			expectUsable:  false,
 		},
 		{
 			name:          "maximum creation height",
 			batchExpiry:   1000,
 			createdHeight: math.MaxInt32,
-			expectUsable:  true,
+			expectUsable:  false,
 		},
 		{
 			name:          "expires exactly at creation",
@@ -121,9 +122,9 @@ func TestCheckExpiryUnusableBatchExpiry(t *testing.T) {
 	})
 }
 
-// TestCheckExpiryIgnoresCreatedHeight verifies that indexer metadata cannot
-// suppress any expiry status.
-func TestCheckExpiryIgnoresCreatedHeight(t *testing.T) {
+// TestCheckExpiryPreservesLegacyGuard verifies inconsistent legacy deadlines
+// remain unknown at every expiry boundary.
+func TestCheckExpiryPreservesLegacyGuard(t *testing.T) {
 	t.Parallel()
 
 	cfg := DefaultExpiryConfig()
@@ -160,18 +161,40 @@ func TestCheckExpiryIgnoresCreatedHeight(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			for _, createdHeight := range []int32{
-				0, 100, batchExpiry, batchExpiry + 1,
-				math.MaxInt32,
+			for _, creation := range []struct {
+				height      int32
+				wantUnknown bool
+			}{
+				{
+					height: 0,
+				},
+				{
+					height: 100,
+				},
+				{
+					height: batchExpiry,
+				},
+				{
+					height:      batchExpiry + 1,
+					wantUnknown: true,
+				},
+				{
+					height:      math.MaxInt32,
+					wantUnknown: true,
+				},
 			} {
 				desc := &Descriptor{
 					BatchExpiry:   batchExpiry,
-					CreatedHeight: createdHeight,
+					CreatedHeight: creation.height,
+				}
+				want := test.status
+				if creation.wantUnknown {
+					want = ExpiryStatusUnknown
 				}
 				require.Equal(
-					t, test.status,
+					t, want,
 					cfg.CheckExpiry(desc, test.height),
-					"creation height %d", createdHeight,
+					"creation height %d", creation.height,
 				)
 			}
 		})

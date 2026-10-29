@@ -15,6 +15,73 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestValidateIncomingBatchExpiry verifies new receives cannot persist an
+// inconsistent expiry while zero creation heights remain compatible.
+func TestValidateIncomingBatchExpiry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		expiry        int32
+		createdHeight int32
+		invalid       bool
+	}{
+		{
+			name:          "valid creation height",
+			expiry:        1000,
+			createdHeight: 700,
+		},
+		{
+			name:   "unknown creation height",
+			expiry: 1000,
+		},
+		{
+			name:          "creation at expiry",
+			expiry:        1000,
+			createdHeight: 1000,
+		},
+		{
+			name:          "creation after expiry",
+			expiry:        1000,
+			createdHeight: 1001,
+			invalid:       true,
+		},
+		{
+			name:          "maximum creation height",
+			expiry:        1000,
+			createdHeight: math.MaxInt32,
+			invalid:       true,
+		},
+		{
+			name:    "missing expiry",
+			invalid: true,
+		},
+		{
+			name:    "negative expiry",
+			expiry:  -1,
+			invalid: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateIncomingBatchExpiry(
+				test.expiry, test.createdHeight,
+			)
+			if test.invalid {
+				require.ErrorIs(
+					t, err, ErrInvalidBatchExpiryEvidence,
+				)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 // TestAuthenticateBatchExpiryUsesEarliestCommitment verifies multi-parent
 // expiry selection and per-commitment lookup deduplication.
 func TestAuthenticateBatchExpiryUsesEarliestCommitment(t *testing.T) {

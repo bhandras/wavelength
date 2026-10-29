@@ -457,8 +457,8 @@ type Descriptor struct {
 	ChainDepth int
 
 	// CreatedHeight is historical creation metadata. Receive paths obtain
-	// it from the indexer, so it cannot authenticate or invalidate the
-	// independently derived BatchExpiry.
+	// it from the indexer; it is not authenticated confirmation evidence.
+	// It also feeds the optional batch-lifetime payment-reserve heuristic.
 	CreatedHeight int32
 
 	// Status is the current lifecycle status of the VTXO.
